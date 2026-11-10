@@ -128,6 +128,27 @@ syncflow/
 
 ```
 
+### Current backend implementation
+
+The repository currently contains the Spring Boot backend and PostgreSQL setup; the `frontend/` directory described above has not been added yet. The backend source is organized by responsibility:
+
+* `controller/` exposes HTTP endpoints (`AuthController`).
+* `service/` contains registration and credential verification (`AuthService`).
+* `repository/` provides Spring Data access to users (`UserRepository`).
+* `model/` maps the `users` table (`User`).
+* `dto/` defines request and response payloads.
+* `config/` configures Spring Security; Flyway schema migrations live under `src/main/resources/db/migration/`.
+
+The implemented auth endpoints are:
+
+| Method | Path | Request | Result |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/auth/register` | `{ "email": "...", "password": "...", "fullName": "..." }` | `200` with a registration message; `400` if the email exists |
+| `POST` | `/api/v1/auth/login` | `{ "email": "...", "password": "..." }` | `200` with user profile and access/refresh tokens; `401` for invalid credentials |
+| `POST` | `/api/v1/auth/refresh` | `{ "refreshToken": "..." }` | `200` with a new token pair; the submitted refresh token is invalidated. Invalid or expired tokens return `401` |
+
+Passwords are stored as BCrypt hashes and never included in responses. Access tokens are signed HS256 JWTs. Refresh tokens are random opaque values; only their SHA-256 hashes are stored in PostgreSQL and each refresh rotates the token. All routes require a valid `Authorization: Bearer <accessToken>` header except registration, login, refresh, Swagger, and `/api/v1/test/**`. Configure `JWT_SECRET` to a private random value of at least 32 bytes before deployment; `JWT_EXPIRATION` and `JWT_REFRESH_EXPIRATION` are milliseconds.
+
 ## 🚀 Getting Started
 
 To run the project locally using Docker, follow these steps:
