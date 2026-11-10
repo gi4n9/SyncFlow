@@ -9,7 +9,64 @@ Ghi chú bàn giao cho các phiên làm việc tiếp theo. Đọc file này tr�
 - Database mặc định: `jdbc:postgresql://localhost:5432/syncflow_db` (user `postgres`). Có thể khởi động PostgreSQL bằng `docker compose up -d postgres` từ thư mục gốc.
 - Chạy backend từ `backend/` bằng `./gradlew bootRun`.
 
-## Latest session — 2026-11-10
+## Product requirements and direction
+
+The attached product brief sets the intended direction for SyncFlow. Treat it as the product requirements source when planning future work. It specifies a **modular monolith** in Spring Boot, React + TypeScript frontend, PostgreSQL/Flyway, and Docker Compose deployment; do not introduce microservices.
+
+### Target product
+
+- Multi-workspace Kanban with workspace membership and Owner/Member/Viewer permissions.
+- Boards, ordered lists/cards, comments, labels/assignees, activity timeline, notifications, search/filtering, and real-time board updates via STOMP.
+- Workspace authorization must be enforced server-side, including IDOR checks and validation of related resources (assignee belongs to workspace; destination list belongs to same board).
+- Consistent REST status codes and RFC 7807 style errors; request DTO validation, pagination capped at 100, optimistic locking for conflicting card edits, and service/integration tests for security and concurrency.
+- Public IDs should ultimately be UUIDs. Use indexed fractional/numeric card positions with occasional rebalance. Keep Flyway migrations authoritative and Hibernate `ddl-auto: validate`.
+- Deployment target is Docker Compose with Nginx, backend, and PostgreSQL. Keep secrets in environment/secrets, not committed configuration. Exclude Google login, file uploads, email notifications, and Redis from the initial scope.
+
+### Auth/security requirements from brief
+
+- Register/login/logout/refresh, profile view/edit, and password change; normalize email to lowercase, enforce unique email and password minimum 8 chars with letters and numbers.
+- Login errors must be generic. Logout revokes the current refresh token; password changes revoke all of the user's refresh tokens.
+- Access JWT target: 15 minutes, HS256 with a strong environment secret, claims limited to `sub`, `exp`, `iat`, `jti`; workspace roles stay dynamic and out of token claims.
+- Refresh token target: random opaque token, hash stored in DB, rotated on refresh, reuse detection revokes the entire token family. Preferred browser delivery is HttpOnly + Secure + SameSite=Strict cookie scoped to `/api/auth`; access token stays in frontend memory.
+- Add rate limits on auth endpoints, strict CORS, security headers, safe logging, and WebSocket CONNECT/SUBSCRIBE authorization. Only expose health from Actuator if/when added.
+
+### Suggested implementation order
+
+1. Finish auth hardening and API conventions (validation, email normalization, 15-minute access token, refresh family/reuse, logout/password change, consistent errors, rate limits).
+2. Workspace and membership module with centralized permission checks and tests for cross-workspace IDOR and Owner invariants.
+3. Board/list/card modules, ordering, board aggregate fetch without N+1, and `@Version` conflict handling.
+4. Comments, activity events, notifications, then STOMP real-time updates with CONNECT and SUBSCRIBE authorization.
+5. Search/filter/pagination, frontend feature modules and automatic access-token refresh, then Docker/Nginx deployment and CI/security checks.
+
+This roadmap is a planning aid; complete one vertical slice at a time and update this section/status as implementation progresses.
+
+### Gaps versus the target brief
+
+Auth has since been hardened (see the latest session below). Remaining auth gaps: rate limiting is currently an in-memory fixed window per IP and endpoint, not per IP + email and not shared across multiple backend instances; security events are not yet logged; JWT secret must be supplied as `JWT_SECRET`; local PostgreSQL defaults remain in YAML/Compose; secure cookie defaults on (set `REFRESH_COOKIE_SECURE=false` only for local plain HTTP). There are no workspace/board/card APIs, WebSocket, Nginx deployment, or frontend auth integration yet. Current IDs are numeric. Preserve these as explicit TODOs rather than assuming they are done.
+
+## Latest session — 2026-11-10 (auth hardening)
+
+- Normalize email to lowercase on register, login, and profile update; request DTOs validate email, name, and password (8+ chars, letter + number).
+- Set BCrypt strength to 12. Wrong login credentials now use a generic Vietnamese RFC 7807 `ProblemDetail` 401 response.
+- Access JWT lifetime is 15 minutes by default; claims are limited to `sub`, `iat`, `exp`, and `jti`.
+- Refresh token moved out of JSON into HttpOnly, SameSite=Strict cookie at `/api/v1/auth`; cookie Secure is configurable and defaults true. DB stores SHA-256 hash, family ID, expiry, and revoked time. Rotation locks token row; reuse revokes active tokens in that family.
+- Add logout (revoke current refresh cookie), profile read/update, and password change (revoke all user's refresh tokens).
+- Add IP + endpoint fixed-window limits: 10 requests/minute for register/login, 20/minute for refresh. This is in-memory and per backend instance; it does not yet key by email.
+- Add single-origin CORS via `FRONTEND_ORIGIN`; default `http://localhost:5173`.
+- Controller validation/auth errors and Spring Security 401/403 responses use RFC 7807 `ProblemDetail` JSON. Generic failed login message is `Email hoặc mật khẩu không đúng`.
+- Add migration `V3__add_refresh_token_families.sql`.
+- `JWT_SECRET` is now required; set a random value of at least 32 bytes. Database settings can be overridden using `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`.
+- Verification: `./gradlew compileJava` succeeded. No tests were run. Backend was not started, so port 8080 remains free.
+
+## Initial implementation session — 2026-11-10
+
+### Frontend foundation
+
+- Added `frontend/` as a Vite + React + TypeScript app with a responsive SyncFlow project dashboard and Kanban board.
+- Added sample task board, search and priority filtering, task creation modal, status movement, workspace navigation, project summary cards, and responsive styling.
+- Added sign-in/sign-up modal wired to the existing `/api/v1/auth/login` and `/api/v1/auth/register`; login tokens are saved in local storage. Vite proxies `/api` to the local backend on port 8080.
+- Added local frontend run instructions to README. Frontend uses sample board data because backend workspace/task APIs are not implemented yet.
+- No dependency installation or build was run in this session.
 
 ### Đã triển khai
 

@@ -6,9 +6,9 @@ spring:
     name: syncflow-backend
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/syncflow_db
-    username: postgres
-    password: secretpassword
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/syncflow_db}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:secretpassword}
     driver-class-name: org.postgresql.Driver
 
   jpa:
@@ -25,7 +25,13 @@ spring:
     locations: classpath:db/migration
 
 jwt:
-  # Override JWT_SECRET with a private random value (at least 32 bytes) outside local development.
-  secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
-  expiration: ${JWT_EXPIRATION:86400000}
+  # Required. Generate a private random secret of at least 32 bytes.
+  secret: ${JWT_SECRET:jeKR>mj)mvng;X^y+(r0<E;)P:.#FXz|-8ilx+I^;Od}
+  expiration: ${JWT_EXPIRATION:900000}
   refresh-expiration: ${JWT_REFRESH_EXPIRATION:604800000}
+
+auth:
+  refresh-cookie-secure: ${REFRESH_COOKIE_SECURE:true}
+
+app:
+  frontend-origin: ${FRONTEND_ORIGIN:http://localhost:5173}

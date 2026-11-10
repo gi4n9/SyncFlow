@@ -143,13 +143,29 @@ The implemented auth endpoints are:
 
 | Method | Path | Request | Result |
 | --- | --- | --- | --- |
-| `POST` | `/api/v1/auth/register` | `{ "email": "...", "password": "...", "fullName": "..." }` | `200` with a registration message; `400` if the email exists |
-| `POST` | `/api/v1/auth/login` | `{ "email": "...", "password": "..." }` | `200` with user profile and access/refresh tokens; `401` for invalid credentials |
-| `POST` | `/api/v1/auth/refresh` | `{ "refreshToken": "..." }` | `200` with a new token pair; the submitted refresh token is invalidated. Invalid or expired tokens return `401` |
+| `POST` | `/api/v1/auth/register` | `{ "email": "...", "password": "...", "fullName": "..." }` | `201` with public profile; `400` for invalid input, `409` for duplicate email |
+| `POST` | `/api/v1/auth/login` | `{ "email": "...", "password": "..." }` | `200` with user profile and access token; refresh token is set as HttpOnly cookie; `401` for invalid credentials |
+| `POST` | `/api/v1/auth/refresh` | Refresh cookie (no body) | `200` with new access token and rotated refresh cookie; invalid/reused token returns `401` |
+| `POST` | `/api/v1/auth/logout` | Refresh cookie (no body) | `204`, revokes current refresh token and clears cookie |
+| `GET` | `/api/v1/auth/me` | Bearer access token | `200` with current profile |
+| `PUT` | `/api/v1/auth/me` | `{ "email": "...", "fullName": "..." }` | Updates current profile; email is normalized to lowercase |
+| `POST` | `/api/v1/auth/password` | `{ "currentPassword": "...", "newPassword": "..." }` | `204`; revokes all refresh tokens for the account |
 
-Passwords are stored as BCrypt hashes and never included in responses. Access tokens are signed HS256 JWTs. Refresh tokens are random opaque values; only their SHA-256 hashes are stored in PostgreSQL and each refresh rotates the token. All routes require a valid `Authorization: Bearer <accessToken>` header except registration, login, refresh, Swagger, and `/api/v1/test/**`. Configure `JWT_SECRET` to a private random value of at least 32 bytes before deployment; `JWT_EXPIRATION` and `JWT_REFRESH_EXPIRATION` are milliseconds.
+Passwords are stored as BCrypt hashes and never included in responses. Access tokens are signed HS256 JWTs and last 15 minutes by default. Refresh tokens are random opaque values in an HttpOnly, SameSite=Strict cookie; only their SHA-256 hashes are stored in PostgreSQL and each refresh rotates the token. Reuse of a revoked token invalidates its token family. All routes require a valid `Authorization: Bearer <accessToken>` header except registration, login, refresh, logout, Swagger, and `/api/v1/test/**`. Set `JWT_SECRET` to a private random value of at least 32 bytes before starting the backend. `JWT_EXPIRATION` and `JWT_REFRESH_EXPIRATION` are milliseconds. `REFRESH_COOKIE_SECURE` defaults to `true`; use `false` only for local HTTP development. `FRONTEND_ORIGIN` controls the single allowed browser origin. Auth endpoints have per-IP fixed-window limits in each backend process.
 
 ## 🚀 Getting Started
+
+### Frontend (local development)
+
+The React + TypeScript frontend lives in `frontend/`. Start the Spring backend on port `8080`, then run:
+
+```sh
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. Vite proxies `/api` requests to `http://localhost:8080`. The current board uses sample project data; sign-in and account creation call the implemented auth endpoints.
 
 To run the project locally using Docker, follow these steps:
 

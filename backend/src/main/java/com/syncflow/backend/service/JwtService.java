@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class JwtService {
@@ -36,9 +37,9 @@ public class JwtService {
             String header = encode(objectMapper.writeValueAsBytes(Map.of("alg", "HS256", "typ", "JWT")));
             String payload = encode(objectMapper.writeValueAsBytes(Map.of(
                 "sub", user.getId().toString(),
-                "email", user.getEmail(),
                 "iat", now.getEpochSecond(),
-                "exp", now.plusMillis(expirationMillis).getEpochSecond()
+                "exp", now.plusMillis(expirationMillis).getEpochSecond(),
+                "jti", UUID.randomUUID().toString()
             )));
             String content = header + "." + payload;
             return content + "." + ENCODER.encodeToString(sign(content));
