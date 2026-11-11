@@ -118,10 +118,14 @@ syncflow/
 │   └── Dockerfile
 ├── frontend/                 # React + TypeScript Application
 │   ├── src/
-│   │   ├── components/       # Reusable UI elements & Kanban board
-│   │   ├── hooks/            # React Query hooks & WebSocket hooks
-│   │   ├── services/         # Axios API clients
-│   │   └── types/            # TypeScript interfaces
+│   │   ├── api/              # Typed API client and auth refresh flow
+│   │   ├── features/
+│   │   │   ├── auth/components/
+│   │   │   ├── board/components/
+│   │   │   └── workspace/components/
+│   │   ├── shared/           # Shared components and view types
+│   │   ├── App.tsx           # App state and feature orchestration
+│   │   └── main.tsx
 │   └── Dockerfile
 └── docker-compose.yml        # Multi-container orchestration (PostgreSQL + Backend + Frontend)
 
@@ -130,7 +134,7 @@ syncflow/
 
 ### Current backend implementation
 
-The repository currently contains the Spring Boot backend and PostgreSQL setup; the `frontend/` directory described above has not been added yet. The backend source is organized by responsibility:
+The repository contains the Spring Boot backend, a Vite + React + TypeScript frontend, and PostgreSQL setup. Signed-in users load workspaces, boards, lists, and cards from the API. Creating boards/cards and moving cards persists to PostgreSQL; the signed-out sample board remains a local preview. Card edit and assignee APIs exist, but their controls are not yet wired into the frontend. The backend source is organized by responsibility:
 
 * `controller/` exposes HTTP endpoints (`AuthController`).
 * `service/` contains registration and credential verification (`AuthService`).
@@ -151,13 +155,50 @@ The implemented auth endpoints are:
 | `PUT` | `/api/v1/auth/me` | `{ "email": "...", "fullName": "..." }` | Updates current profile; email is normalized to lowercase |
 | `POST` | `/api/v1/auth/password` | `{ "currentPassword": "...", "newPassword": "..." }` | `204`; revokes all refresh tokens for the account |
 
+Workspace and membership endpoints:
+
+| Method | Path | Permission / result |
+| --- | --- | --- |
+| `POST` | `/api/v1/workspaces` | Authenticated user creates a workspace and becomes its Owner (`201`) |
+| `GET` | `/api/v1/workspaces` | Lists workspaces for the current user |
+| `GET` | `/api/v1/workspaces/{id}` | Workspace members only; nonmembers receive `404` |
+| `PUT`, `DELETE` | `/api/v1/workspaces/{id}` | Owner only; delete is hard delete with database cascade |
+| `GET` | `/api/v1/workspaces/{id}/members` | Workspace members only |
+| `POST` | `/api/v1/workspaces/{id}/invitations` | Owner invites by email with `MEMBER` or `VIEWER`; returns a one-use token expiring in seven days |
+| `POST` | `/api/v1/invitations/{token}/accept` | Signed-in account matching the invitation email accepts it |
+| `PATCH`, `DELETE` | `/api/v1/workspaces/{id}/members/{userId}` | Owner changes role or removes a member |
+| `DELETE` | `/api/v1/workspaces/{id}/members/me` | Member leaves; current Owner must transfer ownership first |
+
+Board and list endpoints:
+
+| Method | Path | Permission / result |
+| --- | --- | --- |
+| `GET`, `POST` | `/api/v1/workspaces/{id}/boards` | Workspace members list boards; Owner/Member can create. Archived boards are excluded unless `?includeArchived=true` |
+| `GET`, `PUT` | `/api/v1/boards/{id}` | Member can read the board aggregate (lists and cards); Owner/Member can rename it |
+| `POST` | `/api/v1/boards/{id}/archive` | Owner/Member archives the board |
+| `DELETE` | `/api/v1/boards/{id}` | Owner deletes the board and its lists/cards (cascade) |
+| `POST` | `/api/v1/boards/{id}/lists` | Owner/Member creates a list |
+| `PUT`, `PATCH` | `/api/v1/lists/{id}`, `/api/v1/lists/{id}/move` | Owner/Member renames or reorders a list by fractional `position` |
+| `DELETE` | `/api/v1/lists/{id}` | Owner deletes an empty list; lists with cards return `409` |
+
+New boards start with three default lists. Board detail loads lists and cards with bulk queries whose count does not grow with board size. `V5__add_board_lists.sql` migrates existing status-based cards to lists. A board deletion hard-deletes descendants by foreign-key cascade; a list with cards must be emptied first to avoid accidental task loss.
+
+Card endpoints include `POST /api/v1/lists/{listId}/cards`, `PUT /api/v1/cards/{cardId}`, `DELETE /api/v1/cards/{cardId}`, `PATCH /api/v1/cards/{cardId}/move`, and `PUT /api/v1/cards/{cardId}/assignees`. Update, move, and assignee requests carry the card `version`; stale versions return `409 Conflict`. Migration `V6__add_card_editing.sql` adds priority, version, creator, and assignee persistence.
+
 Passwords are stored as BCrypt hashes and never included in responses. Access tokens are signed HS256 JWTs and last 15 minutes by default. Refresh tokens are random opaque values in an HttpOnly, SameSite=Strict cookie; only their SHA-256 hashes are stored in PostgreSQL and each refresh rotates the token. Reuse of a revoked token invalidates its token family. All routes require a valid `Authorization: Bearer <accessToken>` header except registration, login, refresh, logout, Swagger, and `/api/v1/test/**`. Set `JWT_SECRET` to a private random value of at least 32 bytes before starting the backend. `JWT_EXPIRATION` and `JWT_REFRESH_EXPIRATION` are milliseconds. `REFRESH_COOKIE_SECURE` defaults to `true`; use `false` only for local HTTP development. `FRONTEND_ORIGIN` controls the single allowed browser origin. Auth endpoints have per-IP fixed-window limits in each backend process.
 
 ## 🚀 Getting Started
 
 ### Frontend (local development)
 
-The React + TypeScript frontend lives in `frontend/`. Start the Spring backend on port `8080`, then run:
+The React + TypeScript frontend lives in `frontend/`. Start PostgreSQL with `docker compose up -d postgres`, then start the backend locally with its HTTP development cookie and matching frontend origin:
+
+```sh
+cd backend
+JWT_SECRET='replace-with-a-random-secret-of-at-least-32-bytes' REFRESH_COOKIE_SECURE=false FRONTEND_ORIGIN=http://localhost:5173 ./gradlew bootRun
+```
+
+In another terminal, run:
 
 ```sh
 cd frontend
@@ -165,7 +206,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. Vite proxies `/api` requests to `http://localhost:8080`. The current board uses sample project data; sign-in and account creation call the implemented auth endpoints.
+Open `http://localhost:5173`. Vite proxies `/api` requests to `http://localhost:8080`. Sign-in, profile, workspace, member, board, list/card loading, board/card creation, and card movement use the API. Signed-out users see a sample preview; preview changes are not persisted. Use a private random `JWT_SECRET` locally and keep `REFRESH_COOKIE_SECURE=false` only for plain HTTP development.
 
 To run the project locally using Docker, follow these steps:
 
@@ -199,7 +240,7 @@ To run the project locally using Docker, follow these steps:
 
 4. **Access the application:**
 
-   * **Frontend:** `http://localhost:3000`
+   * **Frontend:** `http://localhost:5173`
 
    * **Backend API & Swagger UI:** `http://localhost:8080/swagger-ui/index.html`
 

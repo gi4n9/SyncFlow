@@ -4,7 +4,7 @@ Ghi chú bàn giao cho các phiên làm việc tiếp theo. Đọc file này tr�
 
 ## Project snapshot
 
-- Repository hiện có backend Spring Boot và PostgreSQL qua Docker Compose; frontend được nhắc trong README nhưng chưa có trong working tree.
+- Repository hiện có backend Spring Boot, frontend Vite/React/TypeScript và PostgreSQL qua Docker Compose.
 - Backend nằm trong `backend/`, dùng Java 25, Spring Boot 4.1.2, Spring Security, Spring Data JPA, PostgreSQL và Flyway.
 - Database mặc định: `jdbc:postgresql://localhost:5432/syncflow_db` (user `postgres`). Có thể khởi động PostgreSQL bằng `docker compose up -d postgres` từ thư mục gốc.
 - Chạy backend từ `backend/` bằng `./gradlew bootRun`.
@@ -42,9 +42,66 @@ This roadmap is a planning aid; complete one vertical slice at a time and update
 
 ### Gaps versus the target brief
 
-Auth has since been hardened (see the latest session below). Remaining auth gaps: rate limiting is currently an in-memory fixed window per IP and endpoint, not per IP + email and not shared across multiple backend instances; security events are not yet logged; JWT secret must be supplied as `JWT_SECRET`; local PostgreSQL defaults remain in YAML/Compose; secure cookie defaults on (set `REFRESH_COOKIE_SECURE=false` only for local plain HTTP). There are no workspace/board/card APIs, WebSocket, Nginx deployment, or frontend auth integration yet. Current IDs are numeric. Preserve these as explicit TODOs rather than assuming they are done.
+Auth has since been hardened (see the latest session below). Remaining auth gaps: rate limiting is an in-memory fixed window per IP and endpoint, not per IP + email or shared across backend instances; security logs currently cover failed login and refresh reuse only; JWT secret must be supplied as `JWT_SECRET`; local PostgreSQL defaults remain in YAML/Compose; secure cookie defaults on (set `REFRESH_COOKIE_SECURE=false` only for local plain HTTP). Workspace/member and board/card API paths are present; signed-in frontend supports workspace/board/card loading, board/card creation, and card moves. Card edit and assignee controls, comments, activity, notifications, search, STOMP, and Nginx deployment remain. Current IDs are numeric. Preserve these as explicit TODOs rather than assuming they are done.
 
-## Latest session — 2026-11-10 (auth hardening)
+## Latest session — 2026-11-11 (frontend component refactor)
+
+- Refactored the frontend view out of `App.tsx` into feature folders: `features/auth`, `features/board`, and `features/workspace`; shared layout/feedback components and view models live under `shared/`.
+- Moved preview board data, view models, and API-to-task mapping into `frontend/src/shared/types.ts`; added feature barrel exports to keep imports short.
+- Kept `App.tsx` responsible for session/workspace/board state, API calls, and event handlers; existing backend-backed board/card flows remain intact.
+- Reformatted the TSX component markup and CSS into readable multiline code and added root `.editorconfig` for consistent two-space indentation and LF line endings.
+- Verification: `cd frontend && npm run build` succeeded after formatting. No tests or backend server were run.
+
+## Previous session — 2026-11-11 (F3 boards and lists)
+
+- Added board CRUD and archive under workspace routes; Owner/Member can create, edit and archive; only Owner can delete. Archived boards are hidden by default and included with `?includeArchived=true`.
+- Added board list create/rename/delete/move. Owner/Member can create, rename and move; Owner can delete. A non-empty list cannot be deleted; move or delete its cards first. Ordering uses fractional `double` positions and rebalances when adjacent gaps are under `0.001`.
+- A new board starts with `To do`, `In progress`, and `Done` lists.
+- Board detail returns all lists and cards nested in one HTTP response. Server fetches all lists and all cards in bulk queries (fixed query count, no per-card/list query loop); card CRUD and `@Version` are still F4.
+- Added migration `V5__add_board_lists.sql`: create `board_lists`, archive flag, backfill existing card statuses into lists, add `cards.list_id`, convert card positions to double, and add `(list_id, position)` index. Board/list delete cascades to cards; application blocks deletion of a non-empty list.
+- Added `WorkspacePermissionService` for shared member/editor/owner checks; nonmembers get 404, Viewer write attempts get 403.
+- Verification: backend `compileJava` succeeded. `bootRun` applied Flyway through V5 and Hibernate initialized/validated entities, but Tomcat could not bind because port 8080 was already occupied. The run exited; I did not stop the unknown process. No tests were run. Frontend build last passed during the previous session; no frontend code changed in this F3 session.
+
+### F3 limitations to carry forward
+
+- Board detail has a fixed number of database queries but no benchmark/integration test for the 100-card / 300ms target.
+- IDs remain BIGINT. Card response is read-only until F4; old `board_id` and `column_status` remain in the schema for migration compatibility.
+- Current API is versioned `/api/v1/...`; board/list endpoints follow that prefix.
+
+## Latest session — 2026-11-11 (frontend board/card persistence)
+
+- Added card persistence endpoints and migration `V6__add_card_editing.sql` for card priority, optimistic-lock version, creator, and multiple assignees. Card create/update/delete/move/assignee operations validate workspace permissions; update/move/assignee writes require the current version and stale versions return 409.
+- Frontend uses APIs to list boards and fetch a selected board with its lists/cards. Signed-in users can create boards, create cards with priority/due date, and move cards between lists; after writes, board data is reloaded from the API. The mock Kanban remains only for signed-out preview mode.
+- Updated README and this work log. Card edit/assignee controls, list management UI, and F5-F9 features remain to be connected/implemented.
+- Verification: `./gradlew compileJava` succeeded; `npm run build` succeeded. No tests or backend server were run. V6 has not yet been applied locally; Flyway applies it at the next successful backend startup. Port 8080 was not inspected or changed.
+
+## Previous session — 2026-11-11 (auth integration and workspace foundation)
+
+### Frontend API connection — 2026-11-11
+
+- Extended `frontend/src/api/client.ts` with typed profile, workspace, member, and invitation API calls using the existing in-memory access token, refresh-cookie flow, and shared 401 retry.
+- On app load, the frontend restores the session via `/api/v1/auth/me`, then loads `/api/v1/workspaces`; the workspace switcher selects real workspaces and loads their members.
+- Connected workspace creation and invitation creation to the backend, and wired account sign-out to `/api/v1/auth/logout`.
+- Kept the Kanban task board as sample data because the backend currently has no board/task endpoints. Updated task feedback/footer so it no longer implies sample changes are persisted.
+- Verification: `cd frontend && npm run build` succeeded. No backend services were started; port 8080 state was not changed.
+
+- Updated the attached F1-F9 requirements as the source of truth. Existing backend routes use `/api/v1/...` (versioned) rather than the brief's unversioned `/api/...` examples.
+- Frontend auth now uses `frontend/src/api/client.ts`: access token stays in module memory; refresh token is an HttpOnly cookie; simultaneous 401s share one refresh request; the failed API request retries once after refresh. Removed localStorage token writes.
+- Added missing frontend React type packages; TypeScript and Vite production build now complete. Frontend auth helper clears old localStorage token keys when it loads.
+- Added auth DTO validation, email normalization, BCrypt strength 12, 15-minute JWT with `sub/iat/exp/jti`, refresh cookie, rotation/reuse detection, logout, profile endpoints and password change revocation. Added IP/endpoint rate limit, single-origin CORS and ProblemDetail responses.
+- Added workspace CRUD and membership APIs, owner/member/viewer roles, invite creation/acceptance with one-use hashed token and seven-day expiry, role update/transfer, member removal and leave.
+- Workspace authorization is checked in `WorkspaceService`; nonmembers get 404. Owner-only actions are locked on the workspace row. The service preserves one Owner; ownership transfer demotes the prior owner; the Owner cannot leave/remove/demote themself first.
+- Workspace deletion is hard delete, relying on the existing foreign keys' `ON DELETE CASCADE`. Invitation schema and member index are in migration V4. Expired pending invitations are marked expired so a new invitation can be issued.
+- Public IDs are still BIGINT (the attached brief requests UUID). Switching the existing schema and all foreign keys to UUID remains a planned migration; do not claim this requirement is complete.
+- Build verification then: `backend/./gradlew compileJava` succeeded after adding F2. `frontend/npm run build` first exposed missing `@types/react` packages; added `@types/react` and `@types/react-dom`, then the build succeeded. No test suite was run in that session.
+
+### Remaining auth/workspace caveats
+
+- Rate limits are in-memory per IP and route, not per IP+email and not shared between backend instances.
+- Invitation creation returns the raw token to the Owner in the API response because email delivery is out of scope; caller must share the token/link.
+- Access-token refresh helper is ready for API calls, but current board UI still uses sample data and is not wired to workspace/task APIs.
+- The desired refresh-cookie path in the brief is `/api/auth`; current path remains `/api/v1/auth` to match the versioned API.
+- WebSocket/role-based operation permissions within board/card modules are not implemented yet.
 
 - Normalize email to lowercase on register, login, and profile update; request DTOs validate email, name, and password (8+ chars, letter + number).
 - Set BCrypt strength to 12. Wrong login credentials now use a generic Vietnamese RFC 7807 `ProblemDetail` 401 response.
@@ -64,7 +121,7 @@ Auth has since been hardened (see the latest session below). Remaining auth gaps
 
 - Added `frontend/` as a Vite + React + TypeScript app with a responsive SyncFlow project dashboard and Kanban board.
 - Added sample task board, search and priority filtering, task creation modal, status movement, workspace navigation, project summary cards, and responsive styling.
-- Added sign-in/sign-up modal wired to the existing `/api/v1/auth/login` and `/api/v1/auth/register`; login tokens are saved in local storage. Vite proxies `/api` to the local backend on port 8080.
+- Added sign-in/sign-up modal wired to `/api/v1/auth/login` and `/api/v1/auth/register`; its old localStorage token handling was replaced by the in-memory/cookie client noted in the latest session. Vite proxies `/api` to the local backend on port 8080.
 - Added local frontend run instructions to README. Frontend uses sample board data because backend workspace/task APIs are not implemented yet.
 - No dependency installation or build was run in this session.
 
@@ -95,17 +152,18 @@ Auth has since been hardened (see the latest session below). Remaining auth gaps
 - `backend/src/main/java/com/syncflow/backend/service/RefreshTokenService.java` — tạo, hash, kiểm tra và xoay refresh token.
 - `backend/src/main/java/com/syncflow/backend/config/JwtAuthenticationFilter.java` — xác thực Bearer token cho request.
 - `backend/src/main/java/com/syncflow/backend/config/SecurityConfig.java` — cấu hình stateless security và routes public.
+- `backend/src/main/java/com/syncflow/backend/service/WorkspaceService.java` — workspace/member permissions, owner transfer invariants and invitations.
+- `backend/src/main/java/com/syncflow/backend/controller/WorkspaceController.java` and `InvitationController.java` — F2 REST endpoints.
 - `backend/src/main/java/com/syncflow/backend/model/RefreshToken.java` and `repository/RefreshTokenRepository.java` — persistence cho refresh token.
-- `backend/src/main/resources/db/migration/V1__init_schema.sql` and `V2__create_refresh_tokens.sql` — schema database.
+- `backend/src/main/resources/db/migration/` — V1 baseline schema, V2 refresh-token table, V3 token families and V4 workspace invitation/index changes.
 - `backend/src/main/resources/application.yaml` — database và JWT config; giá trị JWT mặc định chỉ dành cho môi trường local.
 
 ## Known gaps / next considerations
 
-- Chưa có logout/revoke endpoint cho refresh token; hiện token refresh bị thu hồi khi refresh thành công hoặc khi hết hạn.
-- Chưa triển khai RBAC/role cho workspace; các route yêu cầu đăng nhập mới chỉ xác thực user.
-- Chưa có frontend trong repository hiện tại.
-- Chưa chạy test suite. Lần xác nhận gần nhất là chạy `bootRun` thành công; chưa kiểm thử toàn bộ luồng đăng ký, đăng nhập, refresh qua HTTP.
-- `application.yaml` hiện vẫn chứa cấu hình local. Không ignore toàn bộ file này vì backend cần cấu hình mặc định; tạo `application-local.yaml` hoặc chuyển secret local sang env nếu cần cấu hình riêng.
+- No workspace tests or end-to-end HTTP verification have been run. Keep workspace CRUD and role/invitation invariants on the test backlog.
+- Card mutation, comments, activity, notifications, search, STOMP, Nginx deployment, and production frontend integration remain unimplemented.
+- Current IDs are BIGINT rather than the UUIDs in the brief.
+- Local PostgreSQL settings still have development defaults; override via `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`. `JWT_SECRET` is mandatory. `application.yaml` stays tracked as shared config.
 
 ## Update this file after each coding session
 
