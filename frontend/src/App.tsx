@@ -1,34 +1,40 @@
-import { useMemo, useState, type FormEvent } from 'react'
-import { Activity, ArrowDownUp, ArrowRight, Bell, CalendarDays, Check, ChevronDown, CircleHelp, Command, FolderKanban, LayoutDashboard, ListTodo, LockKeyhole, MoreHorizontal, Plus, Search, Settings2, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react'
-
-type Task = { id: number; title: string; project: string; priority: 'High' | 'Medium' | 'Low'; labels: string[]; due: string; assignees: string[]; comments?: number; checklist?: string }
-type Column = { id: string; title: string; tone: string; tasks: Task[] }
-const initial: Column[] = [
-  { id: 'todo', title: 'To do', tone: 'slate', tasks: [
-    { id: 1, title: 'Map out onboarding flow', project: 'Product design', priority: 'High', labels: ['UX research', 'Sprint 08'], due: 'Nov 14', assignees: ['AL', 'MK'], comments: 4, checklist: '2/5' },
-    { id: 2, title: 'Write API integration guide', project: 'Documentation', priority: 'Medium', labels: ['Content'], due: 'Nov 16', assignees: ['TN'], comments: 2 },
-    { id: 3, title: 'Review feedback from beta users', project: 'Product design', priority: 'Low', labels: ['Research'], due: 'Nov 18', assignees: ['MK', 'JD'] },
-  ] },
-  { id: 'progress', title: 'In progress', tone: 'blue', tasks: [
-    { id: 4, title: 'Redesign workspace dashboard', project: 'Product design', priority: 'High', labels: ['UI design', 'Sprint 08'], due: 'Nov 12', assignees: ['AL', 'JD'], comments: 8, checklist: '4/6' },
-    { id: 5, title: 'Set up real-time notifications', project: 'Engineering', priority: 'Medium', labels: ['Backend'], due: 'Nov 13', assignees: ['TN', 'MK'], comments: 3 },
-  ] },
-  { id: 'review', title: 'In review', tone: 'violet', tasks: [
-    { id: 6, title: 'Create component library', project: 'Product design', priority: 'Medium', labels: ['UI design'], due: 'Nov 11', assignees: ['JD'], comments: 6, checklist: '8/8' },
-    { id: 7, title: 'Optimize database queries', project: 'Engineering', priority: 'Low', labels: ['Performance'], due: 'Nov 12', assignees: ['TN', 'AL'] },
-  ] },
-  { id: 'done', title: 'Done', tone: 'green', tasks: [
-    { id: 8, title: 'Define project milestones', project: 'Planning', priority: 'Low', labels: ['Sprint 08'], due: 'Nov 08', assignees: ['AL', 'MK'], comments: 2 },
-  ] },
-]
-const people: Record<string, { name: string; color: string }> = { AL: { name: 'Alex Lee', color: 'peach' }, MK: { name: 'Mia Kim', color: 'lilac' }, TN: { name: 'Theo Nguyen', color: 'mint' }, JD: { name: 'Jamie Diaz', color: 'sky' } }
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { ArrowRight } from 'lucide-react'
+import {
+  createBoard,
+  createCard,
+  createWorkspace,
+  getBoard,
+  getProfile,
+  inviteWorkspaceMember,
+  listBoards,
+  listWorkspaceMembers,
+  listWorkspaces,
+  moveCard,
+  registerAccount,
+  signIn,
+  signOut,
+} from './api/client'
+import type {
+  Board,
+  BoardSummary,
+  CardPriority,
+  UserProfile,
+  Workspace,
+  WorkspaceMember,
+} from './api/client'
+import { AccountModal } from './features/auth'
+import { BoardView, CreateBoardModal, ProjectHeader, ProjectSummary, TaskModal } from './features/board'
+import { CreateWorkspaceModal, Sidebar } from './features/workspace'
+import { Toast, TopBar } from './shared/components'
+import { cardToTask, listTones, previewColumns, type Column } from './shared/types'
 
 function App() {
-  const [columns, setColumns] = useState(initial)
+  const [preview, setPreview] = useState(previewColumns)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('All tasks')
-  const [modal, setModal] = useState(false)
-  const [auth, setAuth] = useState(false)
+  const [taskModalOpen, setTaskModalOpen] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -36,50 +42,428 @@ function App() {
   const [authError, setAuthError] = useState('')
   const [notice, setNotice] = useState('')
   const [taskTitle, setTaskTitle] = useState('')
-  const total = columns.reduce((sum, col) => sum + col.tasks.length, 0)
-  const visibleColumns = useMemo(() => columns.map(col => ({ ...col, tasks: col.tasks.filter(task => `${task.title} ${task.project} ${task.labels.join(' ')}`.toLowerCase().includes(query.toLowerCase()) && (filter === 'All tasks' || task.priority === filter)) })), [columns, query, filter])
+  const [profile, setProfile] = useState<UserProfile | null>(null)
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(null)
+  const [workspaceMembers, setWorkspaceMembers] = useState<WorkspaceMember[]>([])
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false)
+  const [workspaceName, setWorkspaceName] = useState('')
+  const [workspaceDescription, setWorkspaceDescription] = useState('')
+  const [workspaceError, setWorkspaceError] = useState('')
+  const [boards, setBoards] = useState<BoardSummary[]>([])
+  const [activeBoardId, setActiveBoardId] = useState<number | null>(null)
+  const [boardData, setBoardData] = useState<Board | null>(null)
+  const [boardLoading, setBoardLoading] = useState(false)
+  const [boardError, setBoardError] = useState('')
+  const [boardModalOpen, setBoardModalOpen] = useState(false)
+  const [boardName, setBoardName] = useState('')
+  const [boardModalError, setBoardModalError] = useState('')
+  const [taskListId, setTaskListId] = useState<number | null>(null)
+  const [taskPriority, setTaskPriority] = useState<CardPriority>('MEDIUM')
+  const [taskDueDate, setTaskDueDate] = useState('')
 
-  function addTask(event: FormEvent) {
+  const activeWorkspace = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? workspaces[0]
+  const displayColumns = useMemo<Column[]>(() => boardData
+    ? boardData.lists.map((list, index) => ({ id: String(list.id), listId: list.id, title: list.name, tone: listTones[index % listTones.length], tasks: list.cards.map(card => cardToTask(card, boardData.name)) }))
+    : profile ? [] : preview, [boardData, profile, preview])
+  const visibleColumns = useMemo(() => displayColumns.map(column => ({ ...column, tasks: column.tasks.filter(task => `${task.title} ${task.project} ${task.labels.join(' ')}`.toLowerCase().includes(query.toLowerCase()) && (filter === 'All tasks' || task.priority === filter)) })), [displayColumns, query, filter])
+  const total = displayColumns.reduce((sum, column) => sum + column.tasks.length, 0)
+  const inProgressTotal = displayColumns.filter(column => /progress|doing|review/i.test(column.title)).reduce((sum, column) => sum + column.tasks.length, 0)
+  const completedTotal = displayColumns.filter(column => /done|complete/i.test(column.title)).reduce((sum, column) => sum + column.tasks.length, 0)
+  const upcomingTask = displayColumns.flatMap(column => column.tasks).find(task => task.due !== 'No due date')
+  const canEdit = !profile || activeWorkspace?.role !== 'VIEWER'
+
+  useEffect(() => {
+    getProfile().then(async current => {
+      setProfile(current)
+      const items = await listWorkspaces()
+      setWorkspaces(items)
+      setActiveWorkspaceId(items[0]?.id ?? null)
+    }).catch(() => { /* A signed-out visitor can still preview the sample board. */ })
+  }, [])
+
+  useEffect(() => {
+    if (!activeWorkspaceId || !profile) {
+      setWorkspaceMembers([])
+      return
+    }
+    listWorkspaceMembers(activeWorkspaceId).then(setWorkspaceMembers).catch(error => {
+      setWorkspaceMembers([])
+      setNotice(error instanceof Error ? error.message : 'Could not load workspace members.')
+    })
+  }, [activeWorkspaceId, profile])
+
+  useEffect(() => {
+    let active = true
+    setBoardData(null)
+    setActiveBoardId(null)
+    if (!activeWorkspaceId || !profile) {
+      setBoards([])
+      setBoardLoading(false)
+      setBoardError('')
+      return () => { active = false }
+    }
+    setBoardLoading(true)
+    setBoardError('')
+    listBoards(activeWorkspaceId).then(items => {
+      if (!active) return
+      setBoards(items)
+      setActiveBoardId(items[0]?.id ?? null)
+    }).catch(error => { if (active) setBoardError(error instanceof Error ? error.message : 'Could not load boards.') })
+      .finally(() => { if (active) setBoardLoading(false) })
+    return () => { active = false }
+  }, [activeWorkspaceId, profile])
+
+  useEffect(() => {
+    let active = true
+    if (!activeBoardId || !profile) {
+      setBoardData(null)
+      return () => { active = false }
+    }
+    setBoardData(null)
+    setBoardLoading(true)
+    setBoardError('')
+    getBoard(activeBoardId).then(board => { if (active) setBoardData(board) })
+      .catch(error => {
+        if (active) {
+          setBoardData(null)
+          setBoardError(error instanceof Error ? error.message : 'Could not load this board.')
+        }
+      })
+      .finally(() => { if (active) setBoardLoading(false) })
+    return () => { active = false }
+  }, [activeBoardId, profile])
+
+  async function reloadBoard(boardId = activeBoardId) {
+    if (!boardId) return
+    setBoardData(await getBoard(boardId))
+  }
+
+  function openTaskModal(listId?: number) {
+    setTaskListId(listId ?? boardData?.lists[0]?.id ?? null)
+    setTaskPriority('MEDIUM')
+    setTaskDueDate('')
+    setTaskTitle('')
+    setTaskModalOpen(true)
+  }
+
+  async function addTask(event: FormEvent) {
     event.preventDefault()
     if (!taskTitle.trim()) return
-    setColumns(cols => cols.map(col => col.id === 'todo' ? { ...col, tasks: [{ id: Date.now(), title: taskTitle.trim(), project: 'Product design', priority: 'Medium', labels: ['New task'], due: 'Nov 20', assignees: ['AL'] }, ...col.tasks] } : col))
-    setTaskTitle(''); setModal(false); setNotice('Task added to To do')
-  }
-  function moveTask(taskId: number, fromId: string) {
-    const source = columns.find(col => col.id === fromId)?.tasks.find(task => task.id === taskId)
-    if (!source) return
-    const order = ['todo', 'progress', 'review', 'done']; const destination = order[(order.indexOf(fromId) + 1) % order.length]
-    setColumns(cols => cols.map(col => col.id === fromId ? { ...col, tasks: col.tasks.filter(task => task.id !== taskId) } : col.id === destination ? { ...col, tasks: [...col.tasks, source] } : col))
-    setNotice(`Moved to ${columns.find(col => col.id === destination)?.title}`)
-  }
-  async function submitAuth(event: FormEvent) {
-    event.preventDefault(); setAuthError('')
-    try {
-      const response = await fetch(`/api/v1/auth/${authMode === 'login' ? 'login' : 'register'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authMode === 'login' ? { email, password } : { email, password, fullName }) })
-      const raw = await response.text()
-      let data: Record<string, string> = {}
-      try { data = raw ? JSON.parse(raw) as Record<string, string> : {} } catch { /* Spring returns plain text for auth errors. */ }
-      if (!response.ok) throw new Error(data.message || data.error || raw || 'Unable to sign in. Check your details and try again.')
-      if (authMode === 'login') { localStorage.setItem('syncflow_access_token', data.accessToken); localStorage.setItem('syncflow_refresh_token', data.refreshToken); setAuth(false); setNotice(`Welcome back${data.fullName ? `, ${data.fullName.split(' ')[0]}` : ''}!`) }
-      else { setAuthMode('login'); setNotice('Account created. Sign in to get started.') }
-    } catch (error) { setAuthError(error instanceof Error && error.message.includes('Failed to fetch') ? 'Can’t reach the API. Start the backend and try again.' : error instanceof Error ? error.message : 'Something went wrong.') }
+    if (profile) {
+      if (!boardData || !taskListId) {
+        setNotice('Create or select a board before adding a task.')
+        return
+      }
+      try {
+        await createCard(taskListId, { title: taskTitle.trim(), priority: taskPriority, ...(taskDueDate ? { dueDate: new Date(`${taskDueDate}T23:59:59`).toISOString() } : {}) })
+        await reloadBoard()
+        setTaskTitle('')
+        setTaskModalOpen(false)
+        setNotice('Task saved to the database.')
+      } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not save this task.') }
+      return
+    }
+    setPreview(columns => columns.map(column => {
+      if (column.id !== 'todo') return column
+      const task = {
+        id: Date.now(),
+        title: taskTitle.trim(),
+        project: 'Product design',
+        priority: 'Medium' as const,
+        labels: ['New task'],
+        due: 'Nov 20',
+        assignees: ['AL'],
+      }
+      return { ...column, tasks: [task, ...column.tasks] }
+    }))
+    setTaskTitle('')
+    setTaskModalOpen(false)
+    setNotice('Added to the preview board.')
   }
 
-  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#top"><span className="brand-mark"><Command size={19} strokeWidth={2.4}/></span><span>syncflow<span className="brand-period">.</span></span></a>
-    <button className="workspace-switch"><span className="workspace-mark">S</span><span className="workspace-copy"><b>Studio North</b><small>Free plan</small></span><ChevronDown size={15}/></button>
-    <div className="side-label">WORKSPACE <button aria-label="Workspace settings"><Settings2 size={14}/></button></div>
-    <nav className="nav-group"><button className="nav-item"><LayoutDashboard size={17}/> Overview</button><button className="nav-item active"><FolderKanban size={17}/> Projects <span className="nav-count">4</span></button><button className="nav-item"><ListTodo size={17}/> My tasks <span className="nav-count">6</span></button><button className="nav-item"><CalendarDays size={17}/> Calendar</button></nav>
-    <div className="side-label project-label">YOUR PROJECTS <button aria-label="Add project"><Plus size={14}/></button></div><div className="project-list"><button><span className="project-dot dot-indigo"/> Product design <span>8</span></button><button><span className="project-dot dot-orange"/> Engineering <span>12</span></button><button><span className="project-dot dot-green"/> Marketing <span>5</span></button><button><span className="project-dot dot-blue"/> Operations <span>3</span></button></div>
-    <div className="sidebar-bottom"><div className="upgrade-card"><div className="upgrade-icon"><Sparkles size={17}/></div><b>Make room for more</b><p>You’re using 3 of 5 projects on your free plan.</p><button onClick={() => setNotice('You’re all set — unlimited projects are coming soon.')}>Explore plans <ArrowRight size={13}/></button></div><button className="nav-item"><CircleHelp size={17}/> Help & support</button><div className="profile"><div className="avatar peach">AL</div><div className="profile-copy"><b>Alex Lee</b><small>alex@studionorth.co</small></div><button aria-label="Profile menu"><MoreHorizontal size={18}/></button></div></div>
-  </aside><main className="main-area" id="top"><header className="topbar"><div className="breadcrumbs"><span>Projects</span><span className="crumb-slash">/</span><b>Product design</b></div><div className="top-actions"><button className="icon-button search-shortcut" onClick={() => document.getElementById('search')?.focus()}><Search size={17}/><span>Search</span><kbd>⌘ K</kbd></button><button className="icon-button notification-button" aria-label="Notifications" onClick={() => setNotice('You’re all caught up!')}><Bell size={18}/><i/></button><div className="top-divider"/><button className="top-avatar avatar peach" aria-label="Open account" onClick={() => setAuth(true)}>AL</button></div></header>
-    <div className="content"><div className="project-heading"><div><div className="eyebrow"><span className="eyebrow-dot"/> ACTIVE PROJECT <span className="eyebrow-sep">·</span> UPDATED 2H AGO</div><h1>Product design <button aria-label="Project options"><MoreHorizontal size={22}/></button></h1><p className="project-description">The little details make the big difference.</p></div><div className="heading-buttons"><div className="avatar-stack"><span className="avatar peach">AL</span><span className="avatar lilac">MK</span><span className="avatar mint">TN</span><span className="avatar sky">JD</span><button className="avatar more-people">+2</button></div><button className="outline-button invite-button" onClick={() => setNotice('Invite links will be available when workspace members are connected.')}><Users size={15}/> Invite</button><button className="primary-button" onClick={() => setModal(true)}><Plus size={17}/> Add task</button></div></div>
-    <div className="summary-grid"><div className="summary-card"><span className="summary-icon violet-icon"><FolderKanban size={17}/></span><span className="summary-label">Total tasks</span><b>{total}<small> tasks</small></b><div className="summary-foot"><span className="positive"><ArrowRight size={11}/> +12%</span> from last week</div></div><div className="summary-card"><span className="summary-icon blue-icon"><Activity size={17}/></span><span className="summary-label">In progress</span><b>{columns.find(c=>c.id==='progress')?.tasks.length}<small> tasks</small></b><div className="mini-progress"><i/></div><div className="summary-foot">Team is making good progress</div></div><div className="summary-card"><span className="summary-icon green-icon"><Check size={17}/></span><span className="summary-label">Completed this week</span><b>8<small> tasks</small></b><div className="summary-foot"><span className="positive"><ArrowRight size={11}/> +3</span> from last week</div></div><div className="summary-card due-card"><span className="summary-icon peach-icon"><CalendarDays size={17}/></span><span className="summary-label">Upcoming deadline</span><b>Nov 12</b><div className="summary-foot">Redesign workspace dashboard</div></div></div>
-    <section className="board-section"><div className="board-toolbar"><div className="view-tabs"><button className="view-tab selected"><LayoutDashboard size={15}/> Board</button><button className="view-tab" onClick={() => setNotice('List view is coming soon.')}><ListTodo size={15}/> List</button><button className="view-tab" onClick={() => setNotice('Timeline view is coming soon.')}><Activity size={15}/> Timeline</button></div><div className="board-tools"><label className="board-search"><Search size={15}/><input id="search" placeholder="Search tasks..." value={query} onChange={e=>setQuery(e.target.value)}/><kbd>⌘ F</kbd></label><select className="filter-select" aria-label="Filter tasks" value={filter} onChange={e=>setFilter(e.target.value)}><option>All tasks</option><option>High</option><option>Medium</option><option>Low</option></select><button className="tool-button" onClick={() => setNotice('Showing all project members.')}><Users size={16}/></button><button className="tool-button" onClick={() => setNotice('Tasks are grouped by status.')}><SlidersHorizontal size={16}/></button><button className="tool-button sort-button" onClick={() => setNotice('Tasks are sorted by due date.')}><ArrowDownUp size={15}/><span>Sort</span></button></div></div>
-    <div className="kanban">{visibleColumns.map(column=><div className="kanban-column" key={column.id}><div className="column-head"><div className={`column-status ${column.tone}`}/><h2>{column.title}</h2><span className="task-count">{column.tasks.length}</span><button className="column-menu" aria-label={`Add task to ${column.title}`} onClick={() => setModal(true)}><Plus size={16}/></button><button className="column-menu" aria-label="Column options"><MoreHorizontal size={17}/></button></div><div className="task-list">{column.tasks.map(task=><article className="task-card" key={task.id}><div className="task-top"><span className="task-project"><span className={`project-dot ${task.project==='Engineering'?'dot-orange':task.project==='Planning'?'dot-green':'dot-indigo'}`}/>{task.project}</span><button className="task-menu" aria-label="Move task" onClick={() => moveTask(task.id,column.id)}><MoreHorizontal size={16}/></button></div><h3>{task.title}</h3><div className="task-labels">{task.labels.map(label=><span className={`tag ${label==='Sprint 08'?'tag-purple':label==='UI design'?'tag-blue':label==='Backend'?'tag-green':''}`} key={label}>{label}</span>)}</div><div className="task-meta"><span className={`priority priority-${task.priority.toLowerCase()}`}><i/>{task.priority}</span><span className="due-date"><CalendarDays size={13}/>{task.due}</span><div className="task-spacer"/>{task.checklist&&<span className="checklist"><Check size={12}/>{task.checklist}</span>}{task.comments&&<span className="comment-count"><span>▤</span>{task.comments}</span>}<div className="task-avatars">{task.assignees.slice(0,2).map(id=><span className={`avatar avatar-small ${people[id].color}`} title={people[id].name} key={id}>{id}</span>)}</div></div></article>)}</div><button className="add-card" onClick={() => setModal(true)}><Plus size={15}/> Add a task</button></div>)}</div>
-    </section><footer className="board-footer"><span><span className="live-dot"/> All changes saved</span><span>Last synced just now <span className="footer-dot">·</span> <button onClick={() => setNotice('Workspace activity opened.')}>View activity <ArrowRight size={12}/></button></span></footer></div></main>
-    {notice&&<div className="toast"><span className="toast-check"><Check size={14}/></span>{notice}<button aria-label="Dismiss" onClick={()=>setNotice('')}><X size={15}/></button></div>}
-    {modal&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(false)}}><form className="modal" onSubmit={addTask}><div className="modal-heading"><div><span className="modal-kicker">PRODUCT DESIGN</span><h2>Create a task</h2></div><button type="button" className="close-button" onClick={()=>setModal(false)} aria-label="Close"><X size={18}/></button></div><label className="field-label" htmlFor="task-title">Task name</label><input autoFocus id="task-title" className="text-field" placeholder="What needs to get done?" value={taskTitle} onChange={e=>setTaskTitle(e.target.value)}/><div className="modal-row"><div><span className="field-label">Status</span><div className="modal-choice"><span className="column-status slate"/> To do <ChevronDown size={14}/></div></div><div><span className="field-label">Priority</span><div className="modal-choice"><span className="priority-dot medium-dot"/> Medium <ChevronDown size={14}/></div></div></div><div className="modal-actions"><button type="button" className="outline-button" onClick={()=>setModal(false)}>Cancel</button><button className="primary-button" type="submit"><Plus size={16}/> Create task</button></div></form></div>}
-    {auth&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setAuth(false)}}><form className="modal auth-modal" onSubmit={submitAuth}><div className="auth-brand"><span className="brand-mark"><Command size={18}/></span>syncflow<span className="brand-period">.</span></div><button type="button" className="close-button auth-close" onClick={()=>setAuth(false)} aria-label="Close"><X size={18}/></button><h2>{authMode==='login'?'Welcome back':'Create your account'}</h2><p className="auth-subtitle">{authMode==='login'?'Sign in to pick up where your team left off.':'Start organizing your team’s work today.'}</p>{authMode==='register'&&<><label className="field-label" htmlFor="full-name">Full name</label><input className="text-field" id="full-name" autoComplete="name" value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Alex Lee" required/></>}<label className="field-label" htmlFor="auth-email">Email address</label><input className="text-field" id="auth-email" type="email" autoComplete="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@company.com" required/><label className="field-label" htmlFor="auth-password">Password</label><input className="text-field" id="auth-password" type="password" autoComplete={authMode==='login'?'current-password':'new-password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 8 characters" required/>{authError&&<div className="auth-error"><LockKeyhole size={15}/>{authError}</div>}<button className="primary-button auth-submit" type="submit">{authMode==='login'?'Sign in':'Create account'} <ArrowRight size={16}/></button><div className="auth-switch">{authMode==='login'?"Don't have an account?":"Already have an account?"} <button type="button" onClick={()=>{setAuthMode(authMode==='login'?'register':'login');setAuthError('')}}>{authMode==='login'?'Sign up':'Sign in'}</button></div></form></div>}
-  </div>
+  async function moveTask(taskId: number, fromId: string) {
+    const source = displayColumns.find(column => column.id === fromId)?.tasks.find(task => task.id === taskId)
+    if (!source) return
+    if (boardData) {
+      const fromIndex = boardData.lists.findIndex(list => String(list.id) === fromId)
+      const destination = boardData.lists[(fromIndex + 1) % boardData.lists.length]
+      if (!destination || source.version === undefined) return
+      const lastCard = destination.cards.reduce((last, card) => Math.max(last, card.position), 0)
+      try {
+        await moveCard(source.id, { listId: destination.id, position: lastCard + 1000, version: source.version })
+        await reloadBoard()
+        setNotice(`Moved to ${destination.name} and saved.`)
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('changed since')) await reloadBoard()
+        setNotice(error instanceof Error ? error.message : 'Could not move this task.')
+      }
+      return
+    }
+    const order = ['todo', 'progress', 'review', 'done']
+    const destination = order[(order.indexOf(fromId) + 1) % order.length]
+    setPreview(columns => columns.map(column => {
+      if (column.id === fromId) {
+        return { ...column, tasks: column.tasks.filter(task => task.id !== taskId) }
+      }
+      if (column.id === destination) {
+        return { ...column, tasks: [...column.tasks, source] }
+      }
+      return column
+    }))
+    setNotice(`Moved in the preview board to ${preview.find(column => column.id === destination)?.title}`)
+  }
+
+  async function submitAuth(event: FormEvent) {
+    event.preventDefault()
+    setAuthError('')
+    try {
+      if (authMode === 'login') {
+        const data = await signIn(email, password)
+        setProfile({ id: data.id, email: data.email, fullName: data.fullName })
+        const items = await listWorkspaces()
+        setWorkspaces(items)
+        setActiveWorkspaceId(items[0]?.id ?? null)
+        setAuthOpen(false)
+        setNotice(`Welcome back${data.fullName ? `, ${data.fullName.split(' ')[0]}` : ''}!`)
+      } else {
+        await registerAccount(email, password, fullName)
+        setAuthMode('login')
+        setNotice('Account created. Sign in to get started.')
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error && error.message.includes('Failed to fetch')
+        ? 'Can’t reach the API. Start the backend and try again.'
+        : error instanceof Error ? error.message : 'Something went wrong.')
+    }
+  }
+
+  async function submitWorkspace(event: FormEvent) {
+    event.preventDefault()
+    setWorkspaceError('')
+    if (!profile) {
+      setWorkspaceModalOpen(false)
+      setAuthMode('login')
+      setAuthOpen(true)
+      setNotice('Sign in to create a workspace.')
+      return
+    }
+    try {
+      const workspace = await createWorkspace(workspaceName.trim(), workspaceDescription.trim())
+      setWorkspaces(current => [...current, workspace])
+      setActiveWorkspaceId(workspace.id)
+      setWorkspaceName('')
+      setWorkspaceDescription('')
+      setWorkspaceModalOpen(false)
+      setNotice(`Workspace “${workspace.name}” created.`)
+    } catch (error) { setWorkspaceError(error instanceof Error ? error.message : 'Could not create workspace.') }
+  }
+
+  async function submitBoard(event: FormEvent) {
+    event.preventDefault()
+    setBoardModalError('')
+    if (!profile) {
+      setBoardModalOpen(false)
+      setAuthMode('login')
+      setAuthOpen(true)
+      setNotice('Sign in to create a board.')
+      return
+    }
+    if (!activeWorkspace) {
+      setBoardModalError('Create a workspace first.')
+      return
+    }
+    try {
+      const created = await createBoard(activeWorkspace.id, boardName.trim())
+      setBoards(current => [...current, {
+        id: created.id,
+        workspaceId: created.workspaceId,
+        name: created.name,
+        position: current.length + 1,
+        archived: false,
+        createdAt: created.createdAt,
+      }])
+      setBoardData(created)
+      setActiveBoardId(created.id)
+      setBoardName('')
+      setBoardModalOpen(false)
+      setNotice(`Board “${created.name}” saved to the database.`)
+    } catch (error) { setBoardModalError(error instanceof Error ? error.message : 'Could not create board.') }
+  }
+
+  async function inviteMember() {
+    if (!profile) {
+      setAuthMode('login')
+      setAuthOpen(true)
+      setNotice('Sign in to invite teammates.')
+      return
+    }
+    if (!activeWorkspace) {
+      setNotice('Create a workspace before inviting teammates.')
+      return
+    }
+    const inviteEmail = window.prompt('Email address to invite')?.trim()
+    if (!inviteEmail) return
+    try {
+      const invitation = await inviteWorkspaceMember(activeWorkspace.id, inviteEmail)
+      setNotice(`Invitation created for ${invitation.email}. Share this token: ${invitation.invitationToken}`)
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not create invitation.') }
+  }
+
+  async function handleSignOut() {
+    await signOut()
+    setProfile(null)
+    setWorkspaces([])
+    setActiveWorkspaceId(null)
+    setWorkspaceMembers([])
+    setBoards([])
+    setActiveBoardId(null)
+    setBoardData(null)
+    setNotice('You have signed out.')
+  }
+
+  async function retryBoardLoad() {
+    try {
+      if (activeBoardId) await reloadBoard(activeBoardId)
+      else if (activeWorkspaceId) setBoards(await listBoards(activeWorkspaceId))
+      setBoardError('')
+    } catch (error) { setBoardError(error instanceof Error ? error.message : 'Could not load boards.') }
+  }
+
+  return (
+    <div className="app-shell">
+      <Sidebar
+        profile={profile}
+        workspaces={workspaces}
+        activeWorkspace={activeWorkspace}
+        activeWorkspaceId={activeWorkspaceId}
+        workspaceMenu={workspaceMenuOpen}
+        onToggleWorkspaceMenu={() => setWorkspaceMenuOpen(open => !open)}
+        onSelectWorkspace={id => {
+          setActiveWorkspaceId(id)
+          setWorkspaceMenuOpen(false)
+        }}
+        onCreateWorkspace={() => {
+          setWorkspaceMenuOpen(false)
+          setWorkspaceModalOpen(true)
+        }}
+        boards={boards}
+        activeBoardId={activeBoardId}
+        onSelectBoard={setActiveBoardId}
+        onCreateBoard={() => setBoardModalOpen(true)}
+        onNotice={setNotice}
+        onAuth={() => setAuthOpen(true)}
+        onSignOut={handleSignOut}
+      />
+
+      <main className="main-area" id="top">
+        <TopBar
+          workspace={activeWorkspace}
+          boardName={boardData?.name ?? (profile ? 'No board selected' : 'Product design')}
+          profile={profile}
+          onNotice={setNotice}
+          onAccount={profile ? handleSignOut : () => setAuthOpen(true)}
+        />
+        <div className="content">
+          <ProjectHeader
+            title={boardData?.name ?? (profile ? 'Select or create a board' : 'Product design')}
+            description={boardData ? `${activeWorkspace?.name} workspace` : profile ? 'Choose a board from your workspace or create one to start.' : 'The little details make the big difference.'}
+            isBoardLoaded={Boolean(boardData)}
+            profile={profile}
+            members={workspaceMembers}
+            canAddTask={canEdit && (!profile || Boolean(boardData))}
+            onInvite={inviteMember}
+            onAddTask={() => openTaskModal()}
+            onCreateBoard={() => setBoardModalOpen(true)}
+          />
+          <ProjectSummary total={total} inProgress={inProgressTotal} completed={completedTotal} upcoming={upcomingTask} isPreview={!profile} />
+          <BoardView
+            columns={visibleColumns}
+            query={query}
+            filter={filter}
+            profile={profile}
+            boards={boards}
+            boardLoading={boardLoading}
+            boardError={boardError}
+            hasBoard={Boolean(boardData)}
+            canEdit={canEdit}
+            onQueryChange={setQuery}
+            onFilterChange={setFilter}
+            onNotice={setNotice}
+            onRetry={retryBoardLoad}
+            onCreateBoard={() => setBoardModalOpen(true)}
+            onAddTask={openTaskModal}
+            onMoveTask={moveTask}
+          />
+          <footer className="board-footer">
+            <span>
+              <span className="live-dot" />
+              {profile ? boardData ? 'Changes saved to database' : 'Connected to workspace API' : 'Preview board · changes are not saved'}
+            </span>
+            <span>
+              {activeWorkspace ? `Workspace: ${activeWorkspace.name}` : 'Preview mode'}
+              <span className="footer-dot">·</span>
+              <button onClick={() => setNotice('Activity API is not available yet.')}>
+                View activity <ArrowRight size={12} />
+              </button>
+            </span>
+          </footer>
+        </div>
+      </main>
+      <Toast message={notice} onDismiss={() => setNotice('')} />
+      <TaskModal
+        open={taskModalOpen}
+        board={boardData}
+        title={taskTitle}
+        listId={taskListId}
+        priority={taskPriority}
+        dueDate={taskDueDate}
+        onTitle={setTaskTitle}
+        onList={setTaskListId}
+        onPriority={setTaskPriority}
+        onDueDate={setTaskDueDate}
+        onClose={() => setTaskModalOpen(false)}
+        onSubmit={addTask}
+      />
+      <AccountModal
+        open={authOpen}
+        mode={authMode}
+        email={email}
+        password={password}
+        fullName={fullName}
+        error={authError}
+        onEmail={setEmail}
+        onPassword={setPassword}
+        onFullName={setFullName}
+        onMode={mode => {
+          setAuthMode(mode)
+          setAuthError('')
+        }}
+        onClose={() => setAuthOpen(false)}
+        onSubmit={submitAuth}
+      />
+      <CreateWorkspaceModal
+        open={workspaceModalOpen}
+        name={workspaceName}
+        description={workspaceDescription}
+        error={workspaceError}
+        onName={setWorkspaceName}
+        onDescription={setWorkspaceDescription}
+        onClose={() => setWorkspaceModalOpen(false)}
+        onSubmit={submitWorkspace}
+      />
+      <CreateBoardModal
+        open={boardModalOpen}
+        workspaceName={activeWorkspace?.name}
+        name={boardName}
+        error={boardModalError}
+        onName={setBoardName}
+        onClose={() => setBoardModalOpen(false)}
+        onSubmit={submitBoard}
+      />
+    </div>
+  )
 }
+
 export default App
