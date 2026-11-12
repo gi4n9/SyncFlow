@@ -17,7 +17,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class BoardService {
-    private static final List<String> DEFAULT_LISTS = List.of("To do", "In progress", "Done");
+    private static final List<String> DEFAULT_LISTS = List.of(
+        "Draft", "Pending", "In Progress", "Blocked", "In Review", "Reopen", "Done", "Cancelled");
     private final BoardRepository boardRepository;
     private final BoardListRepository listRepository;
     private final CardRepository cardRepository;
@@ -170,9 +171,11 @@ public class BoardService {
     private CardSummaryResponse cardSummary(Card card) {
         List<CardAssigneeResponse> assignees = card.getAssignees().stream()
             .map(user -> new CardAssigneeResponse(user.getId(), user.getEmail(), user.getFullName())).toList();
+        List<CardLabelResponse> labels = card.getLabels().stream()
+            .map(label -> new CardLabelResponse(label.getId(), label.getName(), label.getColor())).toList();
         Long creatorId = card.getCreatedBy() == null ? null : card.getCreatedBy().getId();
         return new CardSummaryResponse(card.getId(), card.getTitle(), card.getDescription(),
-            card.getPosition(), card.getDueDate(), card.getPriority(), card.getVersion(), creatorId, assignees);
+            card.getPosition(), card.getDueDate(), card.getPriority(), card.getVersion(), creatorId, assignees, labels);
     }
 
     public static class BoardNotFoundException extends RuntimeException {
