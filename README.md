@@ -52,7 +52,7 @@ This project goes beyond standard CRUD applications by tackling real-world engin
 
 4. **Real-time Collaboration via WebSocket (STOMP):**
 
-   * Event-driven notifications and instant board updates broadcasted using Spring WebSocket with STOMP protocol and SockJS fallback.
+   * Event-driven notifications and board updates using Spring WebSocket with STOMP.
 
    * Instant UI reactivity on card movements, comments, and member assignments.
 
@@ -134,7 +134,7 @@ syncflow/
 
 ### Current backend implementation
 
-The repository contains the Spring Boot backend, a Vite + React + TypeScript frontend, and PostgreSQL setup. Signed-in users load workspaces, boards, lists, and cards from the API. Creating boards/cards and moving cards persists to PostgreSQL; the signed-out sample board remains a local preview. Card edit and assignee APIs exist, but their controls are not yet wired into the frontend. The backend source is organized by responsibility:
+The repository contains the Spring Boot backend, a Vite + React + TypeScript frontend, and PostgreSQL setup. Signed-in users load workspaces, boards, lists, cards, and workspace members from the API. Owners can invite accounts; invited users accept a token to join and access that workspace's boards. Creating/editing/moving cards and assigning workspace members persists to PostgreSQL; the signed-out sample board remains a local preview. The backend source is organized by responsibility:
 
 * `controller/` exposes HTTP endpoints (`AuthController`).
 * `service/` contains registration and credential verification (`AuthService`).
@@ -166,6 +166,8 @@ Workspace and membership endpoints:
 | `GET` | `/api/v1/workspaces/{id}/members` | Workspace members only |
 | `POST` | `/api/v1/workspaces/{id}/invitations` | Owner invites by email with `MEMBER` or `VIEWER`; returns a one-use token expiring in seven days |
 | `POST` | `/api/v1/invitations/{token}/accept` | Signed-in account matching the invitation email accepts it |
+| `POST` | `/api/v1/my/invitations/{id}/accept` | Accepts a pending invitation received in the signed-in user's notification |
+| `POST` | `/api/v1/my/invitations/{id}/decline` | Declines it; the user is not added to the workspace |
 | `PATCH`, `DELETE` | `/api/v1/workspaces/{id}/members/{userId}` | Owner changes role or removes a member |
 | `DELETE` | `/api/v1/workspaces/{id}/members/me` | Member leaves; current Owner must transfer ownership first |
 
@@ -181,9 +183,25 @@ Board and list endpoints:
 | `PUT`, `PATCH` | `/api/v1/lists/{id}`, `/api/v1/lists/{id}/move` | Owner/Member renames or reorders a list by fractional `position` |
 | `DELETE` | `/api/v1/lists/{id}` | Owner deletes an empty list; lists with cards return `409` |
 
-New boards start with three default lists. Board detail loads lists and cards with bulk queries whose count does not grow with board size. `V5__add_board_lists.sql` migrates existing status-based cards to lists. A board deletion hard-deletes descendants by foreign-key cascade; a list with cards must be emptied first to avoid accidental task loss.
+New boards start with eight workflow lists: `Draft`, `Pending`, `In Progress`, `Blocked`, `In Review`, `Reopen`, `Done`, and `Cancelled`. Board detail loads lists and cards with bulk queries whose count does not grow with board size. `V5__add_board_lists.sql` migrates existing status-based cards to lists. A board deletion hard-deletes descendants by foreign-key cascade; a list with cards must be emptied first to avoid accidental task loss. `V8__add_in_review_list.sql` and `V9__standardize_board_workflow_states.sql` migrate existing boards to the standard workflow while preserving cards and keeping custom lists after the standard states.
 
 Card endpoints include `POST /api/v1/lists/{listId}/cards`, `PUT /api/v1/cards/{cardId}`, `DELETE /api/v1/cards/{cardId}`, `PATCH /api/v1/cards/{cardId}/move`, and `PUT /api/v1/cards/{cardId}/assignees`. Update, move, and assignee requests carry the card `version`; stale versions return `409 Conflict`. Migration `V6__add_card_editing.sql` adds priority, version, creator, and assignee persistence.
+
+Labels are board-scoped. `GET /api/v1/boards/{boardId}/labels` and `GET /api/v1/workspaces/{workspaceId}/labels` list them; `PUT /api/v1/cards/{cardId}/labels` accepts `{ "labels": ["Design", "Sprint 08"] }` and creates/reuses labels on the card's board.
+
+Card search is available at `GET /api/v1/search/cards`. Pass `boardId` or `workspaceId`; optional filters are `q`, `assigneeId`, `label`, `dueFrom`, `dueTo`, and `priority`, along with `page` and `size` (maximum 100). Search checks title and description with PostgreSQL `ILIKE`; migration `V12__add_card_labels_and_search.sql` enables `pg_trgm`, adds GIN indexes, and creates board-scoped labels. Workspace membership is checked before searching.
+
+For board realtime updates, an authenticated STOMP client subscribes to `/topic/boards/{boardId}`. The server checks workspace membership on SUBSCRIBE and broadcasts card, assignee, label, comment, and related activity events only after transaction commit. The frontend reloads the board after receiving an event and after reconnecting. Notification messages continue on `/user/queue/notifications`.
+
+Migration `V7__remove_legacy_card_columns.sql` removes the old `board_id`, `column_status`, and `assigned_to` fields. Cards now reference their board through `board_lists` and store assignees in `card_assignees`.
+
+Comments use `GET/POST /api/v1/cards/{cardId}/comments?page=0&size=20` and `PUT/DELETE /api/v1/comments/{commentId}`. Members and higher roles can read comments; Owner/Member can create them; only the author can edit; the author or workspace Owner can delete. Mention a workspace member by email in the comment text (for example `@member@example.com`) to create a notification; non-members and the author are not notified.
+
+Activity is available through `GET /api/v1/cards/{cardId}/activities` and `GET /api/v1/boards/{boardId}/activities` with `page` and `size` pagination. Card, assignee, comment, and workspace membership actions publish Spring application events; an `AFTER_COMMIT` listener persists the activity records and any associated notifications.
+
+Notifications are available at `GET /api/v1/notifications?page=0&size=20`, `GET /api/v1/notifications/unread-count`, `PATCH /api/v1/notifications/{id}/read`, and `PATCH /api/v1/notifications/read-all`. The authenticated STOMP endpoint is `/ws`; connect with a native `Authorization: Bearer <accessToken>` header and subscribe to `/user/queue/notifications`. Vite proxies `/ws` to the backend during local development. The frontend reconnects and updates the notification badge in real time. Notifications are created for card assignment, comment mentions, and invitations/member joins when the recipient already has an account. An invitation notification opens explicit **Accept**, **Decline**, and **Decide later** actions. A link opens a confirmation screen; signing in never accepts it automatically. Ignoring it leaves the invitation pending, and declining marks it declined. Invitations to unregistered addresses are shared as one-use links; the application does not send email.
+
+Migrations `V10__comments_activity_notifications.sql` and `V11__allow_declined_workspace_invitations.sql` add comment edit metadata, typed notification payloads, activity logs, and the declined invitation status. They are applied by Flyway on the next backend start.
 
 Passwords are stored as BCrypt hashes and never included in responses. Access tokens are signed HS256 JWTs and last 15 minutes by default. Refresh tokens are random opaque values in an HttpOnly, SameSite=Strict cookie; only their SHA-256 hashes are stored in PostgreSQL and each refresh rotates the token. Reuse of a revoked token invalidates its token family. All routes require a valid `Authorization: Bearer <accessToken>` header except registration, login, refresh, logout, Swagger, and `/api/v1/test/**`. Set `JWT_SECRET` to a private random value of at least 32 bytes before starting the backend. `JWT_EXPIRATION` and `JWT_REFRESH_EXPIRATION` are milliseconds. `REFRESH_COOKIE_SECURE` defaults to `true`; use `false` only for local HTTP development. `FRONTEND_ORIGIN` controls the single allowed browser origin. Auth endpoints have per-IP fixed-window limits in each backend process.
 
@@ -206,7 +224,9 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. Vite proxies `/api` requests to `http://localhost:8080`. Sign-in, profile, workspace, member, board, list/card loading, board/card creation, and card movement use the API. Signed-out users see a sample preview; preview changes are not persisted. Use a private random `JWT_SECRET` locally and keep `REFRESH_COOKIE_SECURE=false` only for plain HTTP development.
+Open `http://localhost:5173`. Vite proxies `/api` requests to `http://localhost:8080`. To add a teammate, an Owner enters the member's email and role; the app creates a one-use invitation link that can be copied and shared. The invited account opens the link, signs in (or registers) with that same email, then explicitly accepts or declines; simply signing in or ignoring the invitation does not add them. Invitees can leave a workspace later, subject to the Owner transfer rule. The new member can open workspace boards and can be selected in a task's **Edit task → Assignees** section. The project does not currently send invitation emails itself. Sign-in, profile, workspace, member, board, list/card loading and writes use the API. Signed-out users see a sample preview; preview changes are not persisted. Use a private random `JWT_SECRET` locally and keep `REFRESH_COOKIE_SECURE=false` only for plain HTTP development.
+
+To leave a workspace, open the workspace switcher in the sidebar, choose **Leave “workspace name”**, and confirm. Leaving removes that workspace from your list. The Owner must transfer ownership from member management before leaving.
 
 To run the project locally using Docker, follow these steps:
 
@@ -248,6 +268,8 @@ To run the project locally using Docker, follow these steps:
 
 Once the backend is running, you can explore the fully interactive API documentation via Swagger UI at:
 👉 `http://localhost:8080/swagger-ui/index.html`
+
+To authorize protected endpoints in Swagger, call `POST /api/v1/auth/login`. Swagger UI automatically reads the returned `accessToken` and authorizes the `bearerAuth` scheme for subsequent calls. The refresh token is an HttpOnly cookie and is handled by the browser for refresh/logout endpoints.
 
 ## 📜 License
 
