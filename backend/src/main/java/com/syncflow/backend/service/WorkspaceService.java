@@ -1,9 +1,12 @@
 package com.syncflow.backend.service;
 
 import com.syncflow.backend.dto.*;
+import com.syncflow.backend.event.ActivityEvent;
+import com.syncflow.backend.event.NotificationTarget;
 import com.syncflow.backend.model.*;
 import com.syncflow.backend.repository.*;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,18 +26,21 @@ public class WorkspaceService {
     private final WorkspaceInvitationRepository invitationRepository;
     private final UserRepository userRepository;
     private final WorkspacePermissionService permissionService;
+    private final ApplicationEventPublisher events;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public WorkspaceService(WorkspaceRepository workspaceRepository,
                             WorkspaceMemberRepository memberRepository,
                             WorkspaceInvitationRepository invitationRepository,
                             UserRepository userRepository,
-                            WorkspacePermissionService permissionService) {
+                            WorkspacePermissionService permissionService,
+                            ApplicationEventPublisher events) {
         this.workspaceRepository = workspaceRepository;
         this.memberRepository = memberRepository;
         this.invitationRepository = invitationRepository;
         this.userRepository = userRepository;
         this.permissionService = permissionService;
+        this.events = events;
     }
 
     @Transactional
@@ -103,8 +109,17 @@ public class WorkspaceService {
         User owner = findUser(email);
         String token = createToken();
         Instant expiresAt = Instant.now().plus(7, ChronoUnit.DAYS);
-        invitationRepository.save(new WorkspaceInvitation(workspace, owner, invitedEmail,
+        WorkspaceInvitation invitation = invitationRepository.saveAndFlush(new WorkspaceInvitation(workspace, owner, invitedEmail,
             request.getRole(), hash(token), expiresAt));
+        List<NotificationTarget> notifications = userRepository.findByEmail(invitedEmail)
+            .filter(invitedUser -> !invitedUser.getId().equals(owner.getId()))
+            .map(invitedUser -> List.of(new NotificationTarget(invitedUser.getId(), "WORKSPACE_INVITATION",
+                owner.getFullName() + " invited you to “" + workspace.getName() + "”.",
+                java.util.Map.of("workspaceId", workspaceId, "workspaceName", workspace.getName(),
+                    "invitationId", invitation.getId()))))
+            .orElse(List.of());
+        events.publishEvent(new ActivityEvent(owner.getId(), workspaceId, null, null, "MEMBER_INVITED",
+            java.util.Map.of("email", invitedEmail, "role", request.getRole().name()), notifications));
         return new InvitationResponse(workspaceId, invitedEmail, request.getRole(), token, expiresAt);
     }
 
@@ -113,6 +128,49 @@ public class WorkspaceService {
         User user = findUser(email);
         WorkspaceInvitation invitation = invitationRepository.findByTokenHash(hash(rawToken))
             .orElseThrow(InvalidInvitationException::new);
+        return acceptInvitation(email, user, invitation);
+    }
+
+    @Transactional(noRollbackFor = InvalidInvitationException.class)
+    public InvitationAcceptedResponse acceptInvitationById(String email, Long invitationId) {
+        User user = findUser(email);
+        WorkspaceInvitation invitation = invitationRepository.findLockedById(invitationId)
+            .orElseThrow(InvalidInvitationException::new);
+        return acceptInvitation(email, user, invitation);
+    }
+
+    @Transactional(noRollbackFor = InvalidInvitationException.class)
+    public void declineInvitation(String email, Long invitationId) {
+        User user = findUser(email);
+        WorkspaceInvitation invitation = invitationRepository.findLockedById(invitationId)
+            .orElseThrow(InvalidInvitationException::new);
+        verifyPendingInvitation(email, user, invitation);
+        invitation.setStatus(InvitationStatus.DECLINED);
+        events.publishEvent(new ActivityEvent(user.getId(), invitation.getWorkspace().getId(), null, null,
+            "INVITATION_DECLINED", java.util.Map.of("memberId", user.getId(), "memberName", user.getFullName()), List.of()));
+    }
+
+    private InvitationAcceptedResponse acceptInvitation(String email, User user, WorkspaceInvitation invitation) {
+        verifyPendingInvitation(email, user, invitation);
+        if (memberRepository.existsByWorkspace_IdAndUser_Id(invitation.getWorkspace().getId(), user.getId())) {
+            throw new WorkspaceConflictException("User is already a workspace member");
+        }
+
+        memberRepository.save(new WorkspaceMember(invitation.getWorkspace(), user, invitation.getRole()));
+        invitation.setStatus(InvitationStatus.ACCEPTED);
+        User owner = invitation.getWorkspace().getOwner();
+        List<NotificationTarget> notifications = owner.getId().equals(user.getId()) ? List.of()
+            : List.of(new NotificationTarget(owner.getId(), "WORKSPACE_MEMBER_JOINED",
+                user.getFullName() + " joined “" + invitation.getWorkspace().getName() + "”.",
+                java.util.Map.of("workspaceId", invitation.getWorkspace().getId(), "memberId", user.getId())));
+        events.publishEvent(new ActivityEvent(user.getId(), invitation.getWorkspace().getId(), null, null,
+            "MEMBER_JOINED", java.util.Map.of("memberId", user.getId(), "memberName", user.getFullName(),
+                "role", invitation.getRole().name()), notifications));
+        return new InvitationAcceptedResponse(invitation.getWorkspace().getId(),
+            invitation.getWorkspace().getName(), invitation.getRole().name());
+    }
+
+    private void verifyPendingInvitation(String email, User user, WorkspaceInvitation invitation) {
         if (invitation.getStatus() != InvitationStatus.PENDING) {
             throw new InvalidInvitationException();
         }
@@ -121,16 +179,8 @@ public class WorkspaceService {
             throw new InvalidInvitationException();
         }
         if (!invitation.getEmail().equals(normalizeEmail(user.getEmail()))) {
-            throw new AccessDeniedException("This invitation belongs to a different account");
+            throw new InvitationEmailMismatchException();
         }
-        if (memberRepository.existsByWorkspace_IdAndUser_Id(invitation.getWorkspace().getId(), user.getId())) {
-            throw new WorkspaceConflictException("User is already a workspace member");
-        }
-
-        memberRepository.save(new WorkspaceMember(invitation.getWorkspace(), user, invitation.getRole()));
-        invitation.setStatus(InvitationStatus.ACCEPTED);
-        return new InvitationAcceptedResponse(invitation.getWorkspace().getId(),
-            invitation.getWorkspace().getName(), invitation.getRole().name());
     }
 
     @Transactional
@@ -154,6 +204,9 @@ public class WorkspaceService {
             target.setRole(requestedRole);
         }
         memberRepository.save(target);
+        events.publishEvent(new ActivityEvent(findUser(email).getId(), workspaceId, null, null,
+            "MEMBER_ROLE_CHANGED", java.util.Map.of("memberId", target.getUser().getId(),
+                "memberName", target.getUser().getFullName(), "role", requestedRole.name()), List.of()));
         return memberResponse(target);
     }
 
@@ -165,6 +218,9 @@ public class WorkspaceService {
         }
         WorkspaceMember target = memberRepository.findByWorkspace_IdAndUser_Id(workspaceId, userId)
             .orElseThrow(WorkspaceNotFoundException::new);
+        User actor = findUser(email);
+        events.publishEvent(new ActivityEvent(actor.getId(), workspaceId, null, null, "MEMBER_REMOVED",
+            java.util.Map.of("memberId", target.getUser().getId(), "memberName", target.getUser().getFullName()), List.of()));
         memberRepository.delete(target);
     }
 
@@ -176,6 +232,8 @@ public class WorkspaceService {
         if (current.getUser().getId().equals(workspace.getOwner().getId())) {
             throw new WorkspaceConflictException("Transfer ownership before leaving the workspace");
         }
+        events.publishEvent(new ActivityEvent(current.getUser().getId(), workspaceId, null, null, "MEMBER_LEFT",
+            java.util.Map.of("memberId", current.getUser().getId(), "memberName", current.getUser().getFullName()), List.of()));
         memberRepository.delete(current);
     }
 
@@ -240,5 +298,11 @@ public class WorkspaceService {
 
     public static class InvalidInvitationException extends RuntimeException {
         public InvalidInvitationException() { super("Invitation is invalid, expired, or already used"); }
+    }
+
+    public static class InvitationEmailMismatchException extends AccessDeniedException {
+        public InvitationEmailMismatchException() {
+            super("Lời mời được gửi tới email khác. Hãy đăng nhập bằng email nhận lời mời.");
+        }
     }
 }
