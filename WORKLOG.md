@@ -35,14 +35,34 @@ The attached product brief sets the intended direction for SyncFlow. Treat it as
 1. Finish auth hardening and API conventions (validation, email normalization, 15-minute access token, refresh family/reuse, logout/password change, consistent errors, rate limits).
 2. Workspace and membership module with centralized permission checks and tests for cross-workspace IDOR and Owner invariants.
 3. Board/list/card modules, ordering, board aggregate fetch without N+1, and `@Version` conflict handling.
-4. Comments, activity events, notifications, then STOMP real-time updates with CONNECT and SUBSCRIBE authorization.
+4. Comments, activity events, notifications, then STOMP board updates with CONNECT and SUBSCRIBE authorization.
 5. Search/filter/pagination, frontend feature modules and automatic access-token refresh, then Docker/Nginx deployment and CI/security checks.
 
 This roadmap is a planning aid; complete one vertical slice at a time and update this section/status as implementation progresses.
 
 ### Gaps versus the target brief
 
-Auth has since been hardened (see the latest session below). Remaining auth gaps: rate limiting is an in-memory fixed window per IP and endpoint, not per IP + email or shared across backend instances; security logs currently cover failed login and refresh reuse only; JWT secret must be supplied as `JWT_SECRET`; local PostgreSQL defaults remain in YAML/Compose; secure cookie defaults on (set `REFRESH_COOKIE_SECURE=false` only for local plain HTTP). Workspace/member and board/card API paths are present; signed-in frontend supports workspace/board/card loading, board/card creation, and card moves. Card edit and assignee controls, comments, activity, notifications, search, STOMP, and Nginx deployment remain. Current IDs are numeric. Preserve these as explicit TODOs rather than assuming they are done.
+Auth has since been hardened (see prior sessions). Remaining auth gaps: rate limiting is an in-memory fixed window per IP and endpoint, not per IP + email or shared across backend instances; security logs currently cover failed login and refresh reuse only; JWT secret must be supplied as `JWT_SECRET`; local PostgreSQL defaults remain in YAML/Compose; secure cookie defaults on (set `REFRESH_COOKIE_SECURE=false` only for local plain HTTP). Signed-in frontend supports workspace invitation links/acceptance, board/card loading and writes, comments, activity, notifications, board-scoped STOMP updates, and card search/filter. Invitation links are shareable but there is no outbound email delivery. Nginx deployment remains. Current IDs are numeric. Preserve these as explicit TODOs rather than assuming they are done.
+
+## Latest session — 2026-11-12 (F5 comments, F6 activity, F7 notifications)
+
+- Added Flyway migration `V10__comments_activity_notifications.sql`: comment edit timestamp/index, notification type/payload/index, and `activity_logs` with workspace/board/card/actor references and JSON metadata.
+- Added comment CRUD and page-based listing at `/api/v1/cards/{cardId}/comments` and `/api/v1/comments/{id}`. Workspace membership is enforced; only the author may edit; author or Owner may delete. `@email` mentions resolve only current workspace members and create notifications.
+- Added activity timelines at `/api/v1/cards/{cardId}/activities` and `/api/v1/boards/{boardId}/activities`. Card create/edit/move/delete, assignee changes, comment actions and workspace invite/join/role/remove/leave actions publish application events. `@TransactionalEventListener(AFTER_COMMIT)` persists activity and notification rows in a new transaction.
+- Added notification list pagination, unread count, mark-one/read-all endpoints, and persisted notifications for assignment, mention, and invitation/member-join cases. WebSocket pushes are sent after notification commit to authenticated `/user/queue/notifications` subscribers.
+- WebSocket STOMP endpoint `/ws` validates Bearer JWT on CONNECT and only allows the current user's notification queue on SUBSCRIBE. Frontend reconnects with backoff, displays the unread badge/dropdown, and provides older-page loading and read actions.
+- Added task discussion modal with page-based comments and card activity; board timeline opens from the footer. Comments accept mentions as `@email` and the server only notifies matching workspace members.
+- Updated invitation UX: notifications expose explicit Accept, Decline, and Decide later actions. Link-based invitations open a confirmation modal after sign-in and are no longer auto-accepted. Declining sets invitation status to `DECLINED`; ignoring leaves it `PENDING`. Added authenticated accept/decline endpoints keyed to the invited account and migration `V11__allow_declined_workspace_invitations.sql`.
+- Added a **Leave workspace** action to the workspace switcher menu with confirmation. Non-Owners leave via `DELETE /api/v1/workspaces/{id}/members/me`, then the frontend reloads available workspaces. Owners see the existing transfer-ownership requirement and cannot confirm leaving.
+- Verification: `backend/./gradlew compileJava` and `frontend/npm run build` succeeded after the invitation decision flow. No tests or servers were run; port 8080 was not intentionally opened. Flyway V10 and V11 will apply at next backend startup.
+- Follow-up verification after adding leave-workspace UI: `frontend/npm run build` and `git diff --check` succeeded.
+- Dropdown behavior: workspace switcher, task ellipsis, and notification popover now close on outside click or Escape and each has an X close control. Changed the profile action icon from X to a sign-out icon to avoid confusing it with dismiss. Frontend build and `git diff --check` succeeded.
+- UI refresh based on the supplied Ignara reference: added persistent/system-default light and dark themes, a header theme switch, a clearer Inter + Manrope type scale, improved unread bell/badge styling, and dark surfaces for boards, cards, forms, menus, notifications and dialogs. The reference's template page describes dark/light modes and responsive navigation; its live hash-route demo was not available through the browser reader, so this is a SyncFlow-native visual adaptation rather than a pixel copy. Mobile topbar spacing was adjusted for the new controls.
+- Final UI verification: `frontend/npm run build` and `git diff --check` succeeded. No tests or app servers were started.
+- Remaining: richer member picker for mentions, email delivery for invitations, and Nginx deployment. Workspace invitation notification can only attach to a user account that already exists; the shareable link remains the invitation mechanism for unregistered addresses.
+- F8/F9 follow-up: after-commit card events are broadcast to `/topic/boards/{boardId}`; STOMP CONNECT checks JWT and board SUBSCRIBE checks current workspace membership. The active board client subscribes, reloads on events, and reloads after reconnect. Search supports board/workspace scope, ILIKE title/description, assignee, board label, due range, priority, and page/size; V12 adds pg_trgm GIN indexes and board-scoped labels.
+- UI follow-up: removed the top-right avatar control; workspace menu closes on outside click only (no X button), per latest request.
+- Verification: backend `./gradlew compileJava` and frontend `npm run build` succeeded. No tests or servers were run; Flyway V12 will apply on next backend startup.
 
 ## Latest session — 2026-11-11 (frontend component refactor)
 
@@ -56,7 +76,7 @@ Auth has since been hardened (see the latest session below). Remaining auth gaps
 
 - Added board CRUD and archive under workspace routes; Owner/Member can create, edit and archive; only Owner can delete. Archived boards are hidden by default and included with `?includeArchived=true`.
 - Added board list create/rename/delete/move. Owner/Member can create, rename and move; Owner can delete. A non-empty list cannot be deleted; move or delete its cards first. Ordering uses fractional `double` positions and rebalances when adjacent gaps are under `0.001`.
-- A new board starts with `To do`, `In progress`, and `Done` lists.
+- At the current implementation state, a new board starts with eight workflow lists: `Draft`, `Pending`, `In Progress`, `Blocked`, `In Review`, `Reopen`, `Done`, and `Cancelled`.
 - Board detail returns all lists and cards nested in one HTTP response. Server fetches all lists and all cards in bulk queries (fixed query count, no per-card/list query loop); card CRUD and `@Version` are still F4.
 - Added migration `V5__add_board_lists.sql`: create `board_lists`, archive flag, backfill existing card statuses into lists, add `cards.list_id`, convert card positions to double, and add `(list_id, position)` index. Board/list delete cascades to cards; application blocks deletion of a non-empty list.
 - Added `WorkspacePermissionService` for shared member/editor/owner checks; nonmembers get 404, Viewer write attempts get 403.
@@ -73,7 +93,64 @@ Auth has since been hardened (see the latest session below). Remaining auth gaps
 - Added card persistence endpoints and migration `V6__add_card_editing.sql` for card priority, optimistic-lock version, creator, and multiple assignees. Card create/update/delete/move/assignee operations validate workspace permissions; update/move/assignee writes require the current version and stale versions return 409.
 - Frontend uses APIs to list boards and fetch a selected board with its lists/cards. Signed-in users can create boards, create cards with priority/due date, and move cards between lists; after writes, board data is reloaded from the API. The mock Kanban remains only for signed-out preview mode.
 - Updated README and this work log. Card edit/assignee controls, list management UI, and F5-F9 features remain to be connected/implemented.
-- Verification: `./gradlew compileJava` succeeded; `npm run build` succeeded. No tests or backend server were run. V6 has not yet been applied locally; Flyway applies it at the next successful backend startup. Port 8080 was not inspected or changed.
+- Verification at implementation time: `./gradlew compileJava` and `npm run build` succeeded; no tests were run. Migration V6 was applied/validated in the follow-up startup check recorded below.
+
+## Troubleshooting — 2026-11-12 (task creation report)
+
+- Rechecked the create-task UI/API path: it submits `title`, enum `priority`, optional ISO `dueDate` to `POST /api/v1/lists/{listId}/cards`; the route exists and checks workspace editor permission.
+- `./gradlew bootRun` connected to the configured PostgreSQL DB and validated all 6 Flyway migrations / initialized the current JPA model, but could not bind port 8080 because another process already owns it. Started the current backend on an ephemeral port to confirm startup, then stopped that process. Do not kill or replace the unknown process on 8080 without the user's authorization.
+- Could not inspect the live API response: sandbox denied localhost socket access. The active 8080 process may be a stale backend build; restart the backend process using the current source before testing card creation. Need capture the exact UI/API error if creation still fails after restart.
+- No application code changed in this troubleshooting pass; no tests were run. Frontend build remains successful from the prior session.
+
+## Swagger JWT authorization — 2026-11-12
+
+- Added an HTTP Bearer JWT scheme and global security requirement to the generated OpenAPI document, enabling Swagger UI's **Authorize** dialog for protected routes.
+- Marked register/login/refresh/logout as public OpenAPI operations. A custom Springdoc index transformer adds a Swagger UI response interceptor: after successful `/api/v1/auth/login`, it reads `accessToken` and calls Swagger UI's Bearer preauthorization action. Users no longer need to copy/paste the token.
+- Refresh still uses its HttpOnly cookie. Documented the automatic authorization behavior in README. `./gradlew compileJava` succeeded; no tests or server were run, so port 8080 was left untouched.
+
+## Task creation database constraint — 2026-11-12
+
+- Root cause of the reported `Dữ liệu xung đột với tài khoản hiện có`: V1 defined `cards.board_id` as `NOT NULL`; V5 moved card ownership to `list_id`, but card creation only writes `list_id`, leaving the obsolete required `board_id` empty and violating the DB constraint.
+- Added Flyway `V7__remove_legacy_card_columns.sql` to remove obsolete `board_id`, `column_status`, and `assigned_to`. Their current equivalents are `board_lists.board_id`, `cards.list_id`, and `card_assignees`; V5/V6 already migrate old data before V7.
+- Changed the generic integrity error text so it no longer incorrectly implies an account collision.
+- Verification: `./gradlew compileJava` succeeded. No tests or server were run. Next step: restart backend to apply V7, then retry task creation. The existing process on port 8080 must be stopped/restarted by the user; this session did not change it.
+
+## Task card actions and editing UI — 2026-11-12
+
+- Changed the card's three-dot button from an immediate move action to an action menu with explicit **Edit task** and **Move to next list** items.
+- Added edit modal for title, description, priority, and due date. Signed-in edits call `PUT /api/v1/cards/{id}` with optimistic-lock version then reload the board; preview edits remain local.
+- Added styling for the popover menu and description field. `cd frontend && npm run build` succeeded. No tests were run.
+
+## Add In review list — 2026-11-12
+
+- Added `In review` as a default board list and Flyway `V8__add_in_review_list.sql` to add it to existing boards before `Done` when available (otherwise after the current final list). Existing cards and list positions are preserved.
+- Updated README's board defaults. Backend compilation succeeded; no tests or server were run. Restart backend to apply V8.
+
+## Standardize task workflow states — 2026-11-12
+
+- Changed new-board defaults and the signed-out frontend preview to the eight requested states: Draft, Pending, In Progress, Blocked, In Review, Reopen, Done, Cancelled. Preview move action follows this order.
+- Added Flyway V9 to normalize known old list names (for example `To do` → `Pending`, `Completed` → `Done`), retain cards, position standard states in workflow order, and preserve custom lists after them.
+- Updated README. Backend compile and frontend production build succeeded. `./gradlew bootRun --args=--server.port=0` started successfully (Flyway applied V9 and Hibernate validated the model); I stopped that process afterward. No tests were run, and the existing process on port 8080 was left untouched.
+
+## Workspace member invite and task assignment flow — 2026-11-12
+
+- Added a frontend **Join with invitation** flow for a signed-in account. It calls the one-use invitation accept API, refreshes workspace membership, and selects the joined workspace; backend requires the signed-in email to match the invite.
+- Added multi-select workspace members to the task edit modal and connected it to `PUT /api/v1/cards/{id}/assignees` using the latest card version. Backend already validates that each assignee belongs to the card's workspace.
+- Task cards now show real member initials and names in avatar tooltips. README documents Owner invite → invited account joins → member assigned to task.
+- Verification: frontend `npm run build` and backend `./gradlew compileJava` succeeded. No tests or backend server were run in this session.
+
+## Shareable invitation links — 2026-11-12
+
+- Replaced raw invitation-token toast with an invite modal that creates a URL containing the one-use invitation token and offers a Copy link action.
+- Opening the invitation URL preserves the token through sign-in/sign-up; the frontend now shows an explicit confirmation modal after sign-in. Acceptance only happens when the user presses Join.
+- Manual “Join with invitation” now accepts a pasted link as a fallback. No email/notification transport is configured, so the Owner shares the copied URL through their preferred channel.
+- `cd frontend && npm run build` succeeded. No tests or backend server were run.
+
+## Invitation account mismatch — 2026-11-12
+
+- A 403 when accepting an invitation can happen when the shared link opens in a browser authenticated as the Owner/another account. The invitation remains pending and requires a session for the invited email.
+- Added a dedicated safe 403 message that says the signed-in email does not match the invite without exposing the invited address. Frontend opens the login modal and retains the link so the user can review and explicitly accept after switching accounts.
+- Backend `./gradlew compileJava` and frontend `npm run build` both succeeded. No tests or server were run; restart backend/frontend processes to load the changes.
 
 ## Previous session — 2026-11-11 (auth integration and workspace foundation)
 
