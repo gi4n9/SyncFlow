@@ -5,6 +5,8 @@ import com.syncflow.backend.service.RefreshTokenService;
 import com.syncflow.backend.service.WorkspaceService;
 import com.syncflow.backend.service.BoardService;
 import com.syncflow.backend.service.CardService;
+import com.syncflow.backend.service.CommentService;
+import com.syncflow.backend.service.NotificationService;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
@@ -45,6 +47,11 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.FORBIDDEN, "Bạn không có quyền thực hiện thao tác này");
     }
 
+    @ExceptionHandler(WorkspaceService.InvitationEmailMismatchException.class)
+    public ResponseEntity<ProblemDetail> invitationEmailMismatch(WorkspaceService.InvitationEmailMismatchException exception) {
+        return problem(HttpStatus.FORBIDDEN, exception.getMessage());
+    }
+
     @ExceptionHandler(WorkspaceService.WorkspaceNotFoundException.class)
     public ResponseEntity<ProblemDetail> workspaceNotFound() {
         return problem(HttpStatus.NOT_FOUND, "Workspace hoặc membership không tồn tại");
@@ -58,6 +65,16 @@ public class ApiExceptionHandler {
     @ExceptionHandler(CardService.CardNotFoundException.class)
     public ResponseEntity<ProblemDetail> cardNotFound() {
         return problem(HttpStatus.NOT_FOUND, "Card không tồn tại");
+    }
+
+    @ExceptionHandler(CommentService.CommentNotFoundException.class)
+    public ResponseEntity<ProblemDetail> commentNotFound() {
+        return problem(HttpStatus.NOT_FOUND, "Comment không tồn tại");
+    }
+
+    @ExceptionHandler(NotificationService.NotificationNotFoundException.class)
+    public ResponseEntity<ProblemDetail> notificationNotFound() {
+        return problem(HttpStatus.NOT_FOUND, "Notification không tồn tại");
     }
 
     @ExceptionHandler({CardService.CardConflictException.class, OptimisticLockingFailureException.class})
@@ -103,7 +120,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ProblemDetail> dataConflict() {
-        return problem(HttpStatus.CONFLICT, "Dữ liệu xung đột với tài khoản hiện có");
+        return problem(HttpStatus.CONFLICT, "Không thể lưu dữ liệu vì vi phạm ràng buộc. Hãy kiểm tra dữ liệu liên quan.");
     }
 
     private ResponseEntity<ProblemDetail> problem(HttpStatus status, String message) {

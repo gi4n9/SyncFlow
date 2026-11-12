@@ -4,6 +4,7 @@ import com.syncflow.backend.dto.*;
 import com.syncflow.backend.service.AuthService;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
@@ -30,11 +31,13 @@ public class AuthController {
     }
 
     @PostMapping("/register")
+    @Operation(summary = "Register an account", security = {})
     public ResponseEntity<UserProfileResponse> register(@Valid @RequestBody RegisterRequest request) {
         return ResponseEntity.status(201).body(authService.register(request));
     }
 
     @PostMapping("/login")
+    @Operation(summary = "Log in and receive an access token", security = {})
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
         TokenSession session = authService.login(request);
         return ResponseEntity.ok()
@@ -43,6 +46,7 @@ public class AuthController {
     }
 
     @PostMapping("/refresh")
+    @Operation(summary = "Refresh the access token using the refresh cookie", security = {})
     public ResponseEntity<AuthResponse> refresh(
             @CookieValue(name = REFRESH_COOKIE, required = false) String refreshToken) {
         TokenSession session = authService.refresh(refreshToken);
@@ -52,6 +56,7 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
+    @Operation(summary = "Log out and revoke the refresh cookie", security = {})
     public ResponseEntity<Void> logout(
             @CookieValue(name = REFRESH_COOKIE, required = false) String refreshToken) {
         authService.logout(refreshToken);
