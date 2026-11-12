@@ -46,6 +46,12 @@ public class Card {
         inverseJoinColumns = @JoinColumn(name = "user_id"))
     private Set<User> assignees = new HashSet<>();
 
+    @ManyToMany(fetch = FetchType.LAZY)
+    @JoinTable(name = "card_labels",
+        joinColumns = @JoinColumn(name = "card_id"),
+        inverseJoinColumns = @JoinColumn(name = "label_id"))
+    private Set<Label> labels = new HashSet<>();
+
     protected Card() {}
 
     public Card(BoardList boardList, String title, String description, Double position,
@@ -69,6 +75,7 @@ public class Card {
     public long getVersion() { return version; }
     public User getCreatedBy() { return createdBy; }
     public Set<User> getAssignees() { return assignees; }
+    public Set<Label> getLabels() { return labels; }
     public void update(String title, String description, Instant dueDate, CardPriority priority) {
         this.title = title;
         this.description = description;
@@ -80,5 +87,6 @@ public class Card {
         this.position = position;
     }
     public void setAssignees(Set<User> assignees) { this.assignees = assignees; }
+    public void setLabels(Set<Label> labels) { this.labels = labels; }
     public void setPosition(double position) { this.position = position; }
 }

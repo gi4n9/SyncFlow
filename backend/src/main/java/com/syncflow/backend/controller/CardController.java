@@ -4,6 +4,7 @@ import com.syncflow.backend.dto.CardSummaryResponse;
 import com.syncflow.backend.dto.CreateCardRequest;
 import com.syncflow.backend.dto.MoveCardRequest;
 import com.syncflow.backend.dto.SetCardAssigneesRequest;
+import com.syncflow.backend.dto.SetCardLabelsRequest;
 import com.syncflow.backend.dto.UpdateCardRequest;
 import com.syncflow.backend.service.CardService;
 import jakarta.validation.Valid;
@@ -50,5 +51,11 @@ public class CardController {
     public CardSummaryResponse setAssignees(Principal principal, @PathVariable Long cardId,
                                             @Valid @RequestBody SetCardAssigneesRequest request) {
         return cardService.setAssignees(principal.getName(), cardId, request);
+    }
+
+    @PutMapping("/api/v1/cards/{cardId}/labels")
+    public CardSummaryResponse setLabels(Principal principal, @PathVariable Long cardId,
+                                        @Valid @RequestBody SetCardLabelsRequest request) {
+        return cardService.setLabels(principal.getName(), cardId, request);
     }
 }

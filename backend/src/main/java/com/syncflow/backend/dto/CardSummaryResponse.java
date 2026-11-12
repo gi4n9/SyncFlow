@@ -6,4 +6,5 @@ import java.util.List;
 
 public record CardSummaryResponse(Long id, String title, String description,
                                   double position, Instant dueDate, CardPriority priority,
-                                  long version, Long createdById, List<CardAssigneeResponse> assignees) {}
+                                  long version, Long createdById, List<CardAssigneeResponse> assignees,
+                                  List<CardLabelResponse> labels) {}
