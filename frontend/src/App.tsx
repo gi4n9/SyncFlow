@@ -4,17 +4,33 @@ import {
   createBoard,
   createCard,
   createWorkspace,
+  listNotifications,
+  unreadNotificationCount,
+  markNotificationRead,
+  markAllNotificationsRead,
+  acceptWorkspaceInvitation,
+  acceptPendingWorkspaceInvitation,
+  declineWorkspaceInvitation,
   getBoard,
   getProfile,
   inviteWorkspaceMember,
   listBoards,
   listWorkspaceMembers,
   listWorkspaces,
+  leaveWorkspace,
   moveCard,
+  listBoardLabels,
+  listWorkspaceLabels,
+  searchCards,
   registerAccount,
   signIn,
   signOut,
+  setCardAssignees,
+  setCardLabels,
+  updateCard,
 } from './api/client'
+import type { CardLabel, NotificationItem, SearchCard } from './api/client'
+import { connectNotificationSocket } from './api/notificationSocket'
 import type {
   Board,
   BoardSummary,
@@ -24,15 +40,35 @@ import type {
   WorkspaceMember,
 } from './api/client'
 import { AccountModal } from './features/auth'
-import { BoardView, CreateBoardModal, ProjectHeader, ProjectSummary, TaskModal } from './features/board'
-import { CreateWorkspaceModal, Sidebar } from './features/workspace'
+import { BoardView, CreateBoardModal, EditTaskModal, ProjectHeader, ProjectSummary, TaskModal } from './features/board'
+import { AcceptInvitationModal, CreateWorkspaceModal, InviteMemberModal, LeaveWorkspaceModal, Sidebar } from './features/workspace'
+import { InvitationDecisionModal } from './features/workspace/components/InvitationDecisionModal'
+import { TaskDiscussionModal } from './features/board/components/TaskDiscussionModal'
 import { Toast, TopBar } from './shared/components'
-import { cardToTask, listTones, previewColumns, type Column } from './shared/types'
+import { cardToTask, listTones, previewColumns, type Column, type Task } from './shared/types'
 
 function App() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      const saved = localStorage.getItem('syncflow_theme')
+      if (saved === 'light' || saved === 'dark') return saved
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    } catch { return 'light' }
+  })
   const [preview, setPreview] = useState(previewColumns)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('All tasks')
+  const [searchScope, setSearchScope] = useState<'board' | 'workspace'>('board')
+  const [assigneeFilter, setAssigneeFilter] = useState('')
+  const [labelFilter, setLabelFilter] = useState('')
+  const [dueFromFilter, setDueFromFilter] = useState('')
+  const [dueToFilter, setDueToFilter] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchCard[] | null>(null)
+  const [searchResultsHasNext, setSearchResultsHasNext] = useState(false)
+  const [searchPage, setSearchPage] = useState(0)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const [searchRefresh, setSearchRefresh] = useState(0)
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [authOpen, setAuthOpen] = useState(false)
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
@@ -47,6 +83,8 @@ function App() {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(null)
   const [workspaceMembers, setWorkspaceMembers] = useState<WorkspaceMember[]>([])
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [leaveWorkspaceOpen, setLeaveWorkspaceOpen] = useState(false)
+  const [leavingWorkspace, setLeavingWorkspace] = useState(false)
   const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceDescription, setWorkspaceDescription] = useState('')
@@ -54,6 +92,7 @@ function App() {
   const [boards, setBoards] = useState<BoardSummary[]>([])
   const [activeBoardId, setActiveBoardId] = useState<number | null>(null)
   const [boardData, setBoardData] = useState<Board | null>(null)
+  const [boardLabels, setBoardLabels] = useState<CardLabel[]>([])
   const [boardLoading, setBoardLoading] = useState(false)
   const [boardError, setBoardError] = useState('')
   const [boardModalOpen, setBoardModalOpen] = useState(false)
@@ -62,6 +101,58 @@ function App() {
   const [taskListId, setTaskListId] = useState<number | null>(null)
   const [taskPriority, setTaskPriority] = useState<CardPriority>('MEDIUM')
   const [taskDueDate, setTaskDueDate] = useState('')
+  const [editingTask, setEditingTask] = useState<Task | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
+  const [editingDescription, setEditingDescription] = useState('')
+  const [editingPriority, setEditingPriority] = useState<CardPriority>('MEDIUM')
+  const [editingDueDate, setEditingDueDate] = useState('')
+  const [editingLabels, setEditingLabels] = useState('')
+  const [editingAssigneeIds, setEditingAssigneeIds] = useState<number[]>([])
+  const [editingError, setEditingError] = useState('')
+  const [invitationModalOpen, setInvitationModalOpen] = useState(false)
+  const [invitationToken, setInvitationToken] = useState('')
+  const [invitationError, setInvitationError] = useState('')
+  const [inviteCreateModalOpen, setInviteCreateModalOpen] = useState(false)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<'MEMBER' | 'VIEWER'>('MEMBER')
+  const [inviteLink, setInviteLink] = useState('')
+  const [inviteCopied, setInviteCopied] = useState(false)
+  const [inviteCreateError, setInviteCreateError] = useState('')
+  const [pendingInvitationToken, setPendingInvitationToken] = useState<string | null>(null)
+  const [pendingInvitationDecision, setPendingInvitationDecision] = useState<{ id: number; workspaceName: string } | null>(null)
+  const [discussionTaskId, setDiscussionTaskId] = useState<number | null>(null)
+  const [discussionTaskTitle, setDiscussionTaskTitle] = useState('')
+  const [boardActivityOpen, setBoardActivityOpen] = useState(false)
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [notificationsHasNext, setNotificationsHasNext] = useState(false)
+  const [notificationsPage, setNotificationsPage] = useState(0)
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+
+  useEffect(() => {
+    if (!profile) { setNotifications([]); setUnreadCount(0); setNotificationsPage(0); setNotificationsHasNext(false); return }
+    let active = true
+    const load = () => Promise.all([listNotifications(notificationsPage), unreadNotificationCount()]).then(([page, unread]) => {
+      if (active) {
+        setNotifications(current => notificationsPage === 0 ? page.content : [...current, ...page.content.filter(item => !current.some(existing => existing.id === item.id))])
+        setNotificationsHasNext(page.hasNext)
+        setUnreadCount(unread.count)
+      }
+    }).catch(() => undefined)
+    void load()
+    const disconnect = connectNotificationSocket(item => {
+      setNotifications(current => [item, ...current.filter(existing => existing.id !== item.id)].slice(0, 20))
+      if (!item.read) setUnreadCount(count => count + 1)
+    }, activeBoardId, () => {
+      if (active && activeBoardId !== null) {
+        void reloadBoard(activeBoardId).catch(() => undefined)
+        setSearchRefresh(value => value + 1)
+      }
+    }, () => {
+      if (active && activeBoardId !== null) void reloadBoard(activeBoardId).catch(() => undefined)
+    })
+    return () => { active = false; disconnect() }
+  }, [profile, activeBoardId, notificationsPage])
 
   const activeWorkspace = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? workspaces[0]
   const displayColumns = useMemo<Column[]>(() => boardData
@@ -73,15 +164,43 @@ function App() {
   const completedTotal = displayColumns.filter(column => /done|complete/i.test(column.title)).reduce((sum, column) => sum + column.tasks.length, 0)
   const upcomingTask = displayColumns.flatMap(column => column.tasks).find(task => task.due !== 'No due date')
   const canEdit = !profile || activeWorkspace?.role !== 'VIEWER'
+  const searchActive = Boolean(query.trim() || filter !== 'All tasks' || assigneeFilter || labelFilter || dueFromFilter || dueToFilter)
 
   useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#17191e' : '#f7f8fa')
+    try { localStorage.setItem('syncflow_theme', theme) } catch { /* Theme remains active for this session. */ }
+  }, [theme])
+
+  useEffect(() => {
+    const inviteFromUrl = new URLSearchParams(window.location.search).get('invite')
+    if (inviteFromUrl) setPendingInvitationToken(inviteFromUrl)
     getProfile().then(async current => {
       setProfile(current)
       const items = await listWorkspaces()
       setWorkspaces(items)
       setActiveWorkspaceId(items[0]?.id ?? null)
-    }).catch(() => { /* A signed-out visitor can still preview the sample board. */ })
+    }).catch(() => {
+      if (inviteFromUrl) {
+        setAuthMode('login')
+        setAuthOpen(true)
+        setNotice('Sign in with the invited email address to review this workspace invitation.')
+      }
+    })
   }, [])
+
+  useEffect(() => {
+    if (!pendingInvitationToken) return
+    if (!profile) {
+      setAuthMode('login')
+      setAuthOpen(true)
+      setNotice('Sign in with the invited email to review this workspace invitation.')
+      return
+    }
+    setInvitationToken(pendingInvitationToken)
+    setInvitationError('')
+    setInvitationModalOpen(true)
+  }, [profile, pendingInvitationToken])
 
   useEffect(() => {
     if (!activeWorkspaceId || !profile) {
@@ -135,6 +254,63 @@ function App() {
     return () => { active = false }
   }, [activeBoardId, profile])
 
+  useEffect(() => {
+    let active = true
+    setBoardLabels([])
+    if (!profile || (searchScope === 'board' && !activeBoardId) || !activeWorkspaceId) return () => { active = false }
+    const request = searchScope === 'workspace'
+      ? listWorkspaceLabels(activeWorkspaceId)
+      : listBoardLabels(activeBoardId!)
+    request.then(labels => { if (active) setBoardLabels(labels) })
+      .catch(() => { if (active) setBoardLabels([]) })
+    return () => { active = false }
+  }, [activeBoardId, activeWorkspaceId, profile, searchScope])
+
+  useEffect(() => {
+    let active = true
+    if (!profile || !searchActive || (searchScope === 'board' && !activeBoardId)) {
+      setSearchResults(null)
+      setSearchResultsHasNext(false)
+      setSearchLoading(false)
+      setSearchError('')
+      return () => { active = false }
+    }
+    const timer = window.setTimeout(async () => {
+      setSearchLoading(true)
+      setSearchError('')
+      try {
+        let dueTo: string | undefined
+        if (dueToFilter) {
+          const nextDay = new Date(`${dueToFilter}T00:00:00.000Z`)
+          nextDay.setUTCDate(nextDay.getUTCDate() + 1)
+          dueTo = nextDay.toISOString()
+        }
+        const result = await searchCards({
+          ...(searchScope === 'board' && activeBoardId ? { boardId: activeBoardId } : { workspaceId: activeWorkspaceId ?? undefined }),
+          q: query.trim() || undefined,
+          priority: filter === 'All tasks' ? undefined : filter.toUpperCase() as CardPriority,
+          assigneeId: assigneeFilter ? Number(assigneeFilter) : undefined,
+          label: labelFilter || undefined,
+          dueFrom: dueFromFilter ? new Date(`${dueFromFilter}T00:00:00.000Z`).toISOString() : undefined,
+          dueTo,
+          page: searchPage,
+          size: 30,
+        })
+        if (active) {
+          setSearchResults(result.content)
+          setSearchResultsHasNext(result.hasNext)
+        }
+      } catch (error) {
+        if (active) {
+          setSearchResults([])
+          setSearchResultsHasNext(false)
+          setSearchError(error instanceof Error ? error.message : 'Search failed.')
+        }
+      } finally { if (active) setSearchLoading(false) }
+    }, query.trim() ? 250 : 0)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [profile, activeBoardId, activeWorkspaceId, searchActive, searchScope, query, filter, assigneeFilter, labelFilter, dueFromFilter, dueToFilter, searchPage, searchRefresh])
+
   async function reloadBoard(boardId = activeBoardId) {
     if (!boardId) return
     setBoardData(await getBoard(boardId))
@@ -146,6 +322,124 @@ function App() {
     setTaskDueDate('')
     setTaskTitle('')
     setTaskModalOpen(true)
+  }
+
+  function openEditTask(taskId: number) {
+    const task = displayColumns.flatMap(column => column.tasks).find(item => item.id === taskId)
+    if (!task) return
+    setEditingTask(task)
+    setEditingTitle(task.title)
+    setEditingDescription(task.description ?? '')
+    setEditingPriority(task.priority.toUpperCase() as CardPriority)
+    setEditingDueDate(task.dueDate?.slice(0, 10) ?? '')
+    setEditingLabels(task.labels.join(', '))
+    setEditingAssigneeIds(task.assigneeUserIds ?? [])
+    setEditingError('')
+  }
+
+  function openTaskDiscussion(taskId: number) {
+    const task = displayColumns.flatMap(column => column.tasks).find(item => item.id === taskId)
+    if (task) setDiscussionTaskTitle(task.title)
+    setDiscussionTaskId(taskId)
+  }
+
+  function openSearchResult(result: SearchCard) {
+    setActiveBoardId(result.boardId)
+    setDiscussionTaskTitle(result.title)
+    setDiscussionTaskId(result.id)
+  }
+
+  async function readNotification(id: number) {
+    try {
+      const updated = await markNotificationRead(id)
+      setNotifications(current => current.map(item => item.id === id ? updated : item))
+      setUnreadCount(count => Math.max(0, count - 1))
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not mark notification as read.') }
+  }
+
+  async function readAllNotifications() {
+    try {
+      await markAllNotificationsRead()
+      setNotifications(current => current.map(item => ({ ...item, read: true })))
+      setUnreadCount(0)
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not mark notifications as read.') }
+  }
+
+  async function selectNotification(item: NotificationItem) {
+    setNotificationsOpen(false)
+    if (!item.read) await readNotification(item.id)
+    const invitationId = item.payload?.invitationId
+    if (item.type === 'WORKSPACE_INVITATION' && typeof invitationId === 'number') {
+      setPendingInvitationDecision({ id: invitationId, workspaceName: String(item.payload.workspaceName ?? 'workspace') })
+      return
+    }
+    setNotice(item.message)
+  }
+
+  async function decidePendingInvitation(accept: boolean) {
+    if (!pendingInvitationDecision) return
+    try {
+      if (accept) {
+        const accepted = await acceptPendingWorkspaceInvitation(pendingInvitationDecision.id)
+        const updated = await listWorkspaces()
+        setWorkspaces(updated)
+        setActiveWorkspaceId(accepted.workspaceId)
+        setNotice(`Joined workspace “${accepted.workspaceName}” as ${accepted.role.toLowerCase()}.`)
+      } else {
+        await declineWorkspaceInvitation(pendingInvitationDecision.id)
+        setNotice('Invitation declined. You have not joined the workspace.')
+      }
+      setPendingInvitationDecision(null)
+      setNotifications(current => current.filter(item => item.payload?.invitationId !== pendingInvitationDecision.id))
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not process this invitation.') }
+  }
+
+  async function saveTaskChanges(event: FormEvent) {
+    event.preventDefault()
+    if (!editingTask || !editingTitle.trim()) return
+    setEditingError('')
+    try {
+      const dueDate = editingDueDate ? new Date(`${editingDueDate}T23:59:59`).toISOString() : null
+      if (profile) {
+        if (editingTask.version === undefined) throw new Error('Task version is missing. Reload the board and try again.')
+        const updated = await updateCard(editingTask.id, {
+          title: editingTitle.trim(),
+          description: editingDescription.trim() || null,
+          dueDate,
+          priority: editingPriority,
+          version: editingTask.version,
+        })
+        const oldAssigneeIds = [...(editingTask.assigneeUserIds ?? [])].sort((a, b) => a - b)
+        const newAssigneeIds = [...editingAssigneeIds].sort((a, b) => a - b)
+        if (oldAssigneeIds.join(',') !== newAssigneeIds.join(',')) {
+          await setCardAssignees(editingTask.id, { userIds: editingAssigneeIds, version: updated.version })
+        }
+        const oldLabels = [...editingTask.labels].map(label => label.trim().toLowerCase()).sort()
+        const nextLabels = editingLabels.split(',').map(label => label.trim()).filter(Boolean)
+        if (oldLabels.join(',') !== nextLabels.map(label => label.toLowerCase()).sort().join(',')) {
+          await setCardLabels(editingTask.id, nextLabels)
+        }
+        await reloadBoard()
+      } else {
+        setPreview(columns => columns.map(column => ({
+          ...column,
+          tasks: column.tasks.map(task => task.id === editingTask.id ? {
+            ...task,
+            title: editingTitle.trim(),
+            description: editingDescription.trim() || null,
+            priority: editingPriority[0] + editingPriority.slice(1).toLowerCase() as Task['priority'],
+            dueDate,
+            due: dueDate ? new Date(dueDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'No due date',
+          } : task),
+        })))
+      }
+      setEditingTask(null)
+      setNotice(profile ? 'Task changes saved.' : 'Preview task updated.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not update this task.'
+      if (message.includes('changed since')) await reloadBoard().catch(() => undefined)
+      setEditingError(message)
+    }
   }
 
   async function addTask(event: FormEvent) {
@@ -201,7 +495,7 @@ function App() {
       }
       return
     }
-    const order = ['todo', 'progress', 'review', 'done']
+    const order = ['draft', 'pending', 'progress', 'blocked', 'review', 'reopen', 'done', 'cancelled']
     const destination = order[(order.indexOf(fromId) + 1) % order.length]
     setPreview(columns => columns.map(column => {
       if (column.id === fromId) {
@@ -260,6 +554,21 @@ function App() {
     } catch (error) { setWorkspaceError(error instanceof Error ? error.message : 'Could not create workspace.') }
   }
 
+  async function confirmLeaveWorkspace() {
+    if (!activeWorkspace || activeWorkspace.role === 'OWNER') return
+    setLeavingWorkspace(true)
+    try {
+      await leaveWorkspace(activeWorkspace.id)
+      const remaining = await listWorkspaces()
+      setWorkspaces(remaining)
+      setActiveWorkspaceId(remaining[0]?.id ?? null)
+      setLeaveWorkspaceOpen(false)
+      setNotice(`You left “${activeWorkspace.name}”.`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not leave this workspace.')
+    } finally { setLeavingWorkspace(false) }
+  }
+
   async function submitBoard(event: FormEvent) {
     event.preventDefault()
     setBoardModalError('')
@@ -292,7 +601,7 @@ function App() {
     } catch (error) { setBoardModalError(error instanceof Error ? error.message : 'Could not create board.') }
   }
 
-  async function inviteMember() {
+  function inviteMember() {
     if (!profile) {
       setAuthMode('login')
       setAuthOpen(true)
@@ -303,12 +612,71 @@ function App() {
       setNotice('Create a workspace before inviting teammates.')
       return
     }
-    const inviteEmail = window.prompt('Email address to invite')?.trim()
-    if (!inviteEmail) return
+    setInviteEmail('')
+    setInviteRole('MEMBER')
+    setInviteLink('')
+    setInviteCopied(false)
+    setInviteCreateError('')
+    setInviteCreateModalOpen(true)
+  }
+
+  async function createInvitation(event: FormEvent) {
+    event.preventDefault()
+    setInviteCreateError('')
+    if (!activeWorkspace) return
     try {
-      const invitation = await inviteWorkspaceMember(activeWorkspace.id, inviteEmail)
-      setNotice(`Invitation created for ${invitation.email}. Share this token: ${invitation.invitationToken}`)
-    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not create invitation.') }
+      const invitation = await inviteWorkspaceMember(activeWorkspace.id, inviteEmail.trim(), inviteRole)
+      const link = new URL('/', window.location.origin)
+      link.searchParams.set('invite', invitation.invitationToken)
+      setInviteLink(link.toString())
+    } catch (error) {
+      setInviteCreateError(error instanceof Error ? error.message : 'Could not create invitation link.')
+    }
+  }
+
+  async function copyInvitationLink() {
+    try {
+      await navigator.clipboard.writeText(inviteLink)
+      setInviteCopied(true)
+      setInviteCreateError('')
+    } catch {
+      setInviteCreateError('Clipboard access failed. Select and copy the link from the field above.')
+    }
+  }
+
+  function openJoinWorkspace() {
+    setWorkspaceMenuOpen(false)
+    if (!profile) {
+      setAuthMode('login')
+      setAuthOpen(true)
+      setNotice('Sign in with the invited email before joining a workspace.')
+      return
+    }
+    setInvitationError('')
+    setInvitationToken('')
+    setInvitationModalOpen(true)
+  }
+
+  async function acceptInvitation(event: FormEvent) {
+    event.preventDefault()
+    setInvitationError('')
+    try {
+      let token = invitationToken.trim()
+      try { token = new URL(token).searchParams.get('invite') ?? token } catch { /* Accept a token pasted from an older invitation message. */ }
+      const accepted = await acceptWorkspaceInvitation(token)
+      const updatedWorkspaces = await listWorkspaces()
+      setWorkspaces(updatedWorkspaces)
+      setActiveWorkspaceId(accepted.workspaceId)
+      setInvitationToken('')
+      setInvitationModalOpen(false)
+      setPendingInvitationToken(null)
+      setNotice(`Joined workspace “${accepted.workspaceName}” as ${accepted.role.toLowerCase()}.`)
+      const url = new URL(window.location.href)
+      url.searchParams.delete('invite')
+      window.history.replaceState({}, '', url)
+    } catch (error) {
+      setInvitationError(error instanceof Error ? error.message : 'Could not accept this invitation.')
+    }
   }
 
   async function handleSignOut() {
@@ -348,6 +716,11 @@ function App() {
           setWorkspaceMenuOpen(false)
           setWorkspaceModalOpen(true)
         }}
+        onJoinWorkspace={openJoinWorkspace}
+        onLeaveWorkspace={() => {
+          setWorkspaceMenuOpen(false)
+          setLeaveWorkspaceOpen(true)
+        }}
         boards={boards}
         activeBoardId={activeBoardId}
         onSelectBoard={setActiveBoardId}
@@ -361,9 +734,17 @@ function App() {
         <TopBar
           workspace={activeWorkspace}
           boardName={boardData?.name ?? (profile ? 'No board selected' : 'Product design')}
-          profile={profile}
+          theme={theme}
+          onToggleTheme={() => setTheme(current => current === 'light' ? 'dark' : 'light')}
           onNotice={setNotice}
-          onAccount={profile ? handleSignOut : () => setAuthOpen(true)}
+          notifications={notifications}
+          unreadCount={unreadCount}
+          notificationsOpen={notificationsOpen}
+          notificationsHasNext={notificationsHasNext}
+          onToggleNotifications={() => setNotificationsOpen(open => !open)}
+          onSelectNotification={item => void selectNotification(item)}
+          onReadAll={() => void readAllNotifications()}
+          onLoadMoreNotifications={() => setNotificationsPage(page => page + 1)}
         />
         <div className="content">
           <ProjectHeader
@@ -388,13 +769,35 @@ function App() {
             boardError={boardError}
             hasBoard={Boolean(boardData)}
             canEdit={canEdit}
-            onQueryChange={setQuery}
-            onFilterChange={setFilter}
+            members={workspaceMembers}
+            labels={boardLabels}
+            searchScope={searchScope}
+            assigneeFilter={assigneeFilter}
+            labelFilter={labelFilter}
+            dueFromFilter={dueFromFilter}
+            dueToFilter={dueToFilter}
+            searchActive={searchActive}
+            searchResults={searchResults}
+            searchResultsHasNext={searchResultsHasNext}
+            searchPage={searchPage}
+            searchLoading={searchLoading}
+            searchError={searchError}
+            onQueryChange={value => { setQuery(value); setSearchPage(0) }}
+            onFilterChange={value => { setFilter(value); setSearchPage(0) }}
+            onSearchScopeChange={value => { setSearchScope(value); setSearchPage(0) }}
+            onAssigneeFilterChange={value => { setAssigneeFilter(value); setSearchPage(0) }}
+            onLabelFilterChange={value => { setLabelFilter(value); setSearchPage(0) }}
+            onDueFromFilterChange={value => { setDueFromFilter(value); setSearchPage(0) }}
+            onDueToFilterChange={value => { setDueToFilter(value); setSearchPage(0) }}
+            onSearchPageChange={setSearchPage}
+            onOpenSearchResult={openSearchResult}
             onNotice={setNotice}
             onRetry={retryBoardLoad}
             onCreateBoard={() => setBoardModalOpen(true)}
             onAddTask={openTaskModal}
+            onEditTask={openEditTask}
             onMoveTask={moveTask}
+            onOpenTask={openTaskDiscussion}
           />
           <footer className="board-footer">
             <span>
@@ -404,7 +807,7 @@ function App() {
             <span>
               {activeWorkspace ? `Workspace: ${activeWorkspace.name}` : 'Preview mode'}
               <span className="footer-dot">·</span>
-              <button onClick={() => setNotice('Activity API is not available yet.')}>
+              <button onClick={() => setBoardActivityOpen(true)}>
                 View activity <ArrowRight size={12} />
               </button>
             </span>
@@ -412,6 +815,8 @@ function App() {
         </div>
       </main>
       <Toast message={notice} onDismiss={() => setNotice('')} />
+      {discussionTaskId !== null && <TaskDiscussionModal cardId={discussionTaskId} taskTitle={discussionTaskTitle || displayColumns.flatMap(column => column.tasks).find(task => task.id === discussionTaskId)?.title || 'Task discussion'} currentUserId={profile?.id ?? 0} isOwner={activeWorkspace?.role === 'OWNER'} members={workspaceMembers} onClose={() => setDiscussionTaskId(null)} onNotice={setNotice} />}
+      {boardActivityOpen && activeBoardId && <TaskDiscussionModal boardId={activeBoardId} currentUserId={profile?.id ?? 0} isOwner={activeWorkspace?.role === 'OWNER'} members={workspaceMembers} onClose={() => setBoardActivityOpen(false)} onNotice={setNotice} />}
       <TaskModal
         open={taskModalOpen}
         board={boardData}
@@ -425,6 +830,25 @@ function App() {
         onDueDate={setTaskDueDate}
         onClose={() => setTaskModalOpen(false)}
         onSubmit={addTask}
+      />
+      <EditTaskModal
+        task={editingTask}
+        title={editingTitle}
+        description={editingDescription}
+        priority={editingPriority}
+        dueDate={editingDueDate}
+        labels={editingLabels}
+        members={workspaceMembers}
+        assigneeIds={editingAssigneeIds}
+        error={editingError}
+        onTitle={setEditingTitle}
+        onDescription={setEditingDescription}
+        onPriority={setEditingPriority}
+        onDueDate={setEditingDueDate}
+        onLabels={setEditingLabels}
+        onAssignees={setEditingAssigneeIds}
+        onClose={() => setEditingTask(null)}
+        onSubmit={saveTaskChanges}
       />
       <AccountModal
         open={authOpen}
@@ -452,6 +876,33 @@ function App() {
         onDescription={setWorkspaceDescription}
         onClose={() => setWorkspaceModalOpen(false)}
         onSubmit={submitWorkspace}
+      />
+      <LeaveWorkspaceModal open={leaveWorkspaceOpen} workspaceName={activeWorkspace?.name ?? ''} isOwner={activeWorkspace?.role === 'OWNER'} busy={leavingWorkspace} onClose={() => setLeaveWorkspaceOpen(false)} onConfirm={() => void confirmLeaveWorkspace()} />
+      <AcceptInvitationModal
+        open={invitationModalOpen}
+        token={invitationToken}
+        error={invitationError}
+        onToken={setInvitationToken}
+        onClose={() => setInvitationModalOpen(false)}
+        onSubmit={acceptInvitation}
+      />
+      <InvitationDecisionModal open={Boolean(pendingInvitationDecision)} workspaceName={pendingInvitationDecision?.workspaceName ?? ''} onClose={() => setPendingInvitationDecision(null)} onAccept={() => void decidePendingInvitation(true)} onDecline={() => void decidePendingInvitation(false)} />
+      <InviteMemberModal
+        open={inviteCreateModalOpen}
+        email={inviteEmail}
+        role={inviteRole}
+        invitationLink={inviteLink}
+        copied={inviteCopied}
+        error={inviteCreateError}
+        onEmail={setInviteEmail}
+        onRole={setInviteRole}
+        onClose={() => {
+          setInviteCreateModalOpen(false)
+          setInviteLink('')
+          setInviteCopied(false)
+        }}
+        onSubmit={createInvitation}
+        onCopy={copyInvitationLink}
       />
       <CreateBoardModal
         open={boardModalOpen}

@@ -8,9 +8,13 @@ export type Task = {
   labels: string[]
   due: string
   assignees: string[]
+  assigneeNames?: Record<string, string>
   comments?: number
   checklist?: string
   version?: number
+  description?: string | null
+  dueDate?: string | null
+  assigneeUserIds?: number[]
 }
 export type Column = {
   id: string
@@ -27,7 +31,8 @@ export type AppBoardSummary = BoardSummary
 export type Priority = CardPriority
 
 export const previewColumns: Column[] = [
-  { id: 'todo', title: 'To do', tone: 'slate', tasks: [
+  { id: 'draft', title: 'Draft', tone: 'slate', tasks: [] },
+  { id: 'pending', title: 'Pending', tone: 'blue', tasks: [
     {
       id: 1,
       title: 'Map out onboarding flow',
@@ -59,7 +64,7 @@ export const previewColumns: Column[] = [
       assignees: ['MK', 'JD'],
     },
   ] },
-  { id: 'progress', title: 'In progress', tone: 'blue', tasks: [
+  { id: 'progress', title: 'In Progress', tone: 'violet', tasks: [
     {
       id: 4,
       title: 'Redesign workspace dashboard',
@@ -82,7 +87,8 @@ export const previewColumns: Column[] = [
       comments: 3,
     },
   ] },
-  { id: 'review', title: 'In review', tone: 'violet', tasks: [
+  { id: 'blocked', title: 'Blocked', tone: 'orange', tasks: [] },
+  { id: 'review', title: 'In Review', tone: 'blue', tasks: [
     {
       id: 6,
       title: 'Create component library',
@@ -104,6 +110,7 @@ export const previewColumns: Column[] = [
       assignees: ['TN', 'AL'],
     },
   ] },
+  { id: 'reopen', title: 'Reopen', tone: 'orange', tasks: [] },
   { id: 'done', title: 'Done', tone: 'green', tasks: [
     {
       id: 8,
@@ -116,6 +123,7 @@ export const previewColumns: Column[] = [
       comments: 2,
     },
   ] },
+  { id: 'cancelled', title: 'Cancelled', tone: 'slate', tasks: [] },
 ]
 
 export const people: Record<string, { name: string; color: string }> = {
@@ -130,5 +138,20 @@ export function cardToTask(card: Card, boardName: string): Task {
   const priority = `${card.priority[0]}${card.priority.slice(1).toLowerCase()}` as Task['priority']
   const due = card.dueDate ? new Date(card.dueDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'No due date'
   const assignees = card.assignees.map(user => user.fullName.split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase())
-  return { id: card.id, title: card.title, project: boardName, priority, labels: [], due, assignees, version: card.version }
+  return {
+    id: card.id,
+    title: card.title,
+    project: boardName,
+    priority,
+    labels: card.labels?.map(label => label.name) ?? [],
+    due,
+    assignees,
+    assigneeNames: Object.fromEntries(card.assignees.map(user => [
+      user.fullName.split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase(), user.fullName,
+    ])),
+    version: card.version,
+    description: card.description,
+    dueDate: card.dueDate,
+    assigneeUserIds: card.assignees.map(user => user.userId),
+  }
 }

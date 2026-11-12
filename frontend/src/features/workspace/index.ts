@@ -1,2 +1,6 @@
 export { CreateWorkspaceModal } from './components/CreateWorkspaceModal'
+export { AcceptInvitationModal } from './components/AcceptInvitationModal'
+export { InvitationDecisionModal } from './components/InvitationDecisionModal'
+export { LeaveWorkspaceModal } from './components/LeaveWorkspaceModal'
+export { InviteMemberModal } from './components/InviteMemberModal'
 export { Sidebar } from './components/Sidebar'

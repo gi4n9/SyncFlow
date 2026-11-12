@@ -1,4 +1,5 @@
-import { ArrowRight, CalendarDays, ChevronDown, CircleHelp, Command, FolderKanban, LayoutDashboard, ListTodo, MoreHorizontal, Plus, Settings2, Sparkles, X } from 'lucide-react'
+import { useEffect, useRef } from 'react'
+import { ArrowRight, CalendarDays, ChevronDown, CircleHelp, Command, FolderKanban, LayoutDashboard, ListTodo, LogOut, MoreHorizontal, Plus, Settings2, Sparkles, UserPlus } from 'lucide-react'
 import type { AppBoardSummary, AppUser, AppWorkspace } from '../../../shared/types'
 
 type SidebarProps = {
@@ -10,6 +11,8 @@ type SidebarProps = {
   onToggleWorkspaceMenu: () => void
   onSelectWorkspace: (id: number) => void
   onCreateWorkspace: () => void
+  onJoinWorkspace: () => void
+  onLeaveWorkspace: () => void
   boards: AppBoardSummary[]
   activeBoardId: number | null
   onSelectBoard: (id: number) => void
@@ -20,8 +23,22 @@ type SidebarProps = {
 }
 
 export function Sidebar(props: SidebarProps) {
-  const { profile, workspaces, activeWorkspace, activeWorkspaceId, workspaceMenu, onToggleWorkspaceMenu, onSelectWorkspace, onCreateWorkspace, boards, activeBoardId, onSelectBoard, onCreateBoard, onNotice, onAuth, onSignOut } = props
+  const { profile, workspaces, activeWorkspace, activeWorkspaceId, workspaceMenu, onToggleWorkspaceMenu, onSelectWorkspace, onCreateWorkspace, onJoinWorkspace, onLeaveWorkspace, boards, activeBoardId, onSelectBoard, onCreateBoard, onNotice, onAuth, onSignOut } = props
   const initials = profile?.fullName.split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase() ?? 'AL'
+  const workspaceMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!workspaceMenu) return
+    const dismissOutside = (event: PointerEvent) => {
+      if (!workspaceMenuRef.current?.contains(event.target as Node)) onToggleWorkspaceMenu()
+    }
+    const dismissEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onToggleWorkspaceMenu() }
+    document.addEventListener('pointerdown', dismissOutside)
+    document.addEventListener('keydown', dismissEscape)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside)
+      document.removeEventListener('keydown', dismissEscape)
+    }
+  }, [workspaceMenu, onToggleWorkspaceMenu])
 
   return (
     <aside className="sidebar">
@@ -30,17 +47,19 @@ export function Sidebar(props: SidebarProps) {
         <span>syncflow<span className="brand-period">.</span></span>
       </a>
 
-      <button className="workspace-switch" onClick={onToggleWorkspaceMenu}>
-        <span className="workspace-mark">{(activeWorkspace?.name ?? 'Studio North').slice(0, 1).toUpperCase()}</span>
-        <span className="workspace-copy">
-          <b>{activeWorkspace?.name ?? 'Studio North'}</b>
-          <small>{activeWorkspace?.role ?? 'Sample workspace'}</small>
-        </span>
-        <ChevronDown size={15} />
-      </button>
+      <div className="workspace-menu-container" ref={workspaceMenuRef}>
+        <button className="workspace-switch" aria-expanded={workspaceMenu} onClick={onToggleWorkspaceMenu}>
+          <span className="workspace-mark">{(activeWorkspace?.name ?? 'Studio North').slice(0, 1).toUpperCase()}</span>
+          <span className="workspace-copy">
+            <b>{activeWorkspace?.name ?? 'Studio North'}</b>
+            <small>{activeWorkspace?.role ?? 'Sample workspace'}</small>
+          </span>
+          <ChevronDown size={15} />
+        </button>
 
       {workspaceMenu && (
         <div className="workspace-menu">
+          <div className="workspace-menu-heading"><b>Workspaces</b></div>
           {workspaces.map((workspace) => (
             <button
               key={workspace.id}
@@ -55,8 +74,18 @@ export function Sidebar(props: SidebarProps) {
           <button className="new-workspace" onClick={onCreateWorkspace}>
             <Plus size={14} /> Create workspace
           </button>
+          <button className="new-workspace" onClick={onJoinWorkspace}>
+            <UserPlus size={14} /> Join with invitation
+          </button>
+          {profile && activeWorkspace && <>
+            <div className="workspace-menu-divider" />
+            <button className="leave-workspace-action" onClick={onLeaveWorkspace}>
+              <LogOut size={14} /> Leave “{activeWorkspace.name}”
+            </button>
+          </>}
         </div>
       )}
+      </div>
 
       <div className="side-label">
         WORKSPACE
@@ -110,7 +139,7 @@ export function Sidebar(props: SidebarProps) {
             <small>{profile?.email ?? 'Sample account'}</small>
           </div>
           <button aria-label={profile ? 'Sign out' : 'Profile menu'} onClick={profile ? onSignOut : onAuth}>
-            {profile ? <X size={16} /> : <MoreHorizontal size={18} />}
+            {profile ? <LogOut size={16} /> : <MoreHorizontal size={18} />}
           </button>
         </div>
       </div>

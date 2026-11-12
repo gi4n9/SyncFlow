@@ -1,5 +1,6 @@
 export { BoardView } from './components/BoardView'
 export { CreateBoardModal } from './components/CreateBoardModal'
+export { EditTaskModal } from './components/EditTaskModal'
 export { ProjectHeader } from './components/ProjectHeader'
 export { ProjectSummary } from './components/ProjectSummary'
 export { TaskModal } from './components/TaskModal'
